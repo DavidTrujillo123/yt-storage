@@ -1,4 +1,8 @@
 import 'reflect-metadata';
+// Before anything reads process.env: ConfigModule loads the .env file itself,
+// but only once Nest is building the container, and the secret key has to be
+// resolved before that.
+import 'dotenv/config';
 import { Logger, RequestMethod, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -7,6 +11,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { AppModule } from './app.module';
 import { ExceptionLogger } from './common/exception-logger';
+import { applySecretKey } from './common/secret-key';
 
 /**
  * One process, one port: the API under /api and the UI on everything else.
@@ -17,6 +22,8 @@ import { ExceptionLogger } from './common/exception-logger';
  * true by construction.
  */
 async function bootstrap(): Promise<void> {
+  applySecretKey(new Logger('bootstrap'));
+
   const app = await NestFactory.create<NestExpressApplication>(AppModule.register(false));
 
   // Google's OAuth callback is registered in every user's Cloud project as

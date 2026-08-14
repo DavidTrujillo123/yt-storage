@@ -1,3 +1,7 @@
 node_modules/
 .DS_Store
 .env
+
+# The auto-generated encryption key. Normally it lives under DATA_DIR, which is
+# already ignored - but DATA_DIR is configurable, so match it by name too.
+secret.key
