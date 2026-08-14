@@ -7,6 +7,7 @@ import IORedis from 'ioredis';
 import { DatabaseModule } from './database.module';
 import { CommonModule } from './common/common.module';
 import { AuthModule } from './auth/auth.module';
+import { AdminSeed } from './auth/admin-seed';
 import { AccountsModule } from './accounts/accounts.module';
 import { CookiesHealthCheck } from './accounts/cookies.health';
 import { YtAccount } from './accounts/yt-account.entity';
@@ -54,7 +55,10 @@ export class AppModule {
         ...(withWorkers ? [JobsModule] : []),
       ],
       controllers: [StatusController],
-      providers: [CookiesHealthCheck],
+      // The seeder belongs to the HTTP process alone. Both processes start at
+      // once against one database, and two of them inserting the same email is
+      // a race with nothing to win.
+      providers: [CookiesHealthCheck, ...(withWorkers ? [] : [AdminSeed])],
     };
   }
 }
