@@ -138,15 +138,58 @@ YTS_IMAGE=ghcr.io/davidtrujillo123/yt-storage:latest \
 Then <http://localhost:3000>, sign in as `admin@yt-storage.com` / `Abcd1234`,
 and change it — see above for why that matters.
 
-Two things to set for anything other than a local trial:
+### The address, and the three places it has to match
 
-- `PORT` and `GOOGLE_REDIRECT_URI` must agree with the address you actually
-  reach the machine at, and the redirect URI must match what is registered in
-  each Google Cloud project. Changing it later breaks every account already
-  connected.
-- `SECRET_KEY`, if you would rather it not live in the data volume. Moving an
-  instance means carrying that key and the `data` volume together; either alone
-  is useless.
+This is the one setting a deployment gets wrong, and it fails late: everything
+works until the OAuth consent screen, which then refuses with
+`redirect_uri_mismatch`. It reads like a broken Cloud project and is not.
+
+Three values have to name the **same address you type in the browser**:
+
+| Where | What |
+|---|---|
+| `PORT` in the environment | the host port published by compose |
+| `GOOGLE_REDIRECT_URI` in the environment | `<that address>/accounts/callback` |
+| *Authorized redirect URIs* in each Google Cloud project | the identical string |
+
+`PORT` is only the **host** side of the mapping — the container always listens
+on 3000, and `PORT=8080` publishes `8080:3000`. So the port in
+`GOOGLE_REDIRECT_URI` is the one you browse to, never the internal 3000.
+(Running natively, without Docker, `PORT` *is* the listening port.)
+
+Worked examples — one `.env` next to the compose file:
+
+```bash
+# Local trial. Nothing to set: these are the defaults.
+PORT=3000
+GOOGLE_REDIRECT_URI=http://localhost:3000/accounts/callback
+
+# Reached over the LAN.
+PORT=3000
+GOOGLE_REDIRECT_URI=http://192.168.1.50:3000/accounts/callback
+
+# Reached over Tailscale, published on another port.
+PORT=8080
+GOOGLE_REDIRECT_URI=http://nas.tail1234.ts.net:8080/accounts/callback
+
+# Behind a reverse proxy terminating TLS on 443.
+PORT=3000
+GOOGLE_REDIRECT_URI=https://yts.example.com/accounts/callback
+```
+
+`/setup` compares `GOOGLE_REDIRECT_URI` against the address the browser is
+actually on and says so, in red, before you get as far as Google — so if the
+wizard is quiet, these agree.
+
+Two more things worth setting deliberately:
+
+- **`SECRET_KEY`**, if you would rather it not live in the data volume. Moving
+  an instance means carrying that key and the `data` volume together; either
+  alone is useless.
+- **TLS.** The session cookie is issued without the `secure` flag, because this
+  is expected to run over plain HTTP on a home network and a secure-only cookie
+  would simply never be sent — login would appear to fail silently. If you put
+  it behind TLS, turn `secure` on in `api/src/auth/auth.controller.ts`.
 
 Upgrading is the same command with a newer tag:
 

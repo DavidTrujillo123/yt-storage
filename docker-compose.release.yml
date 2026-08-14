@@ -6,6 +6,17 @@
 #
 # Same three services as docker-compose.yml; the only difference is that the
 # image is pulled rather than built here.
+#
+# For anything past a local trial, put a .env next to this file with the
+# address you actually reach the machine at:
+#
+#   PORT=8080
+#   GOOGLE_REDIRECT_URI=http://nas.tail1234.ts.net:8080/accounts/callback
+#
+# PORT is the host side of the mapping only - the container always listens on
+# 3000 - and the port in GOOGLE_REDIRECT_URI is the one the browser uses. That
+# same URI must also be registered in every Google Cloud project, or OAuth
+# fails at the consent screen with redirect_uri_mismatch.
 services:
   redis:
     image: redis:7-alpine
