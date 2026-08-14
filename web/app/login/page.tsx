@@ -3,35 +3,40 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import type { Bootstrap } from '@/lib/api';
 
 /**
- * The owner's credentials, on the page, on purpose.
+ * The password the API seeds an instance with.
  *
- * This is a single-user instance on a home network and forgetting the password
- * means rewriting a hash in SQLite by hand — there is no reset flow. The cost
- * is real and worth stating: anyone who can load this page can sign in, which
- * includes anyone reaching the machine over Tailscale, and this account holds
- * cookie jars that authenticate every Google service. Delete this block and the
- * two `useState` defaults below to turn the login back into a login.
+ * Held here rather than served: the API only ever says *whether* the shipped
+ * credential is still in use, never what it is. It can only be this value —
+ * a password set through ADMIN_PASSWORD is the operator's own and the flag is
+ * never raised for it — so the page can fill it in without a secret crossing
+ * the wire.
  */
-const REMINDER = { email: 'davot098@gmail.com', password: 'disco-lento-brasa-9471' };
+const SEEDED_PASSWORD = 'Abcd1234';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [registrationOpen, setRegistrationOpen] = useState(false);
+  const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [email, setEmail] = useState(REMINDER.email);
-  const [password, setPassword] = useState(REMINDER.password);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    // Registration is open only while the instance has no users, so the form
-    // is offered rather than assumed.
-    api<{ open: boolean }>('/auth/registration')
-      .then(({ open }) => {
-        setRegistrationOpen(open);
-        if (open) setMode('register');
+    // Two things the page cannot assume: whether registration is still open
+    // (it closes as soon as the instance has a user) and whether this instance
+    // is still on the credential it shipped with.
+    api<Bootstrap>('/auth/bootstrap')
+      .then((info) => {
+        setBootstrap(info);
+        if (info.registrationOpen && !info.defaultAdmin) setMode('register');
+        if (info.defaultAdmin) {
+          setEmail(info.defaultAdmin);
+          setPassword(SEEDED_PASSWORD);
+        }
       })
       .catch(() => undefined);
   }, []);
@@ -42,12 +47,16 @@ export default function LoginPage() {
     setError(null);
     try {
       await api(`/auth/${mode}`, { method: 'POST', body: JSON.stringify({ email, password }) });
-      router.replace('/files');
+      // Straight to the wizard while the shipped password is still in place:
+      // changing it is its first step.
+      router.replace(bootstrap?.defaultAdmin ? '/setup' : '/files');
     } catch (failure) {
       setError((failure as Error).message);
       setBusy(false);
     }
   }
+
+  const minLength = bootstrap?.minPasswordLength ?? 8;
 
   return (
     <>
@@ -79,7 +88,7 @@ export default function LoginPage() {
               autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              minLength={12}
+              minLength={mode === 'register' ? minLength : undefined}
               required
             />
           </div>
@@ -88,7 +97,7 @@ export default function LoginPage() {
             <button className="primary" type="submit" disabled={busy}>
               {busy ? 'Working…' : mode === 'register' ? 'Create account' : 'Sign in'}
             </button>
-            {registrationOpen && (
+            {bootstrap?.registrationOpen && (
               <button type="button" onClick={() => setMode(mode === 'login' ? 'register' : 'login')}>
                 {mode === 'login' ? 'Register instead' : 'I already have an account'}
               </button>
@@ -98,14 +107,11 @@ export default function LoginPage() {
           {error && <p className="error">{error}</p>}
         </form>
 
-        {mode === 'login' && (
+        {bootstrap?.defaultAdmin && (
           <div className="notice" style={{ marginTop: '1rem', marginBottom: 0 }}>
-            Saved here so you cannot lock yourself out — there is no reset flow.
-            <div className="mono" style={{ marginTop: '0.4rem', color: 'var(--text)' }}>
-              {REMINDER.email}
-              <br />
-              {REMINDER.password}
-            </div>
+            This instance is still using the password it shipped with, filled in above. Anyone who
+            can reach this page can sign in and read the Google credentials it holds — change it as
+            soon as you are in.
           </div>
         )}
       </section>
