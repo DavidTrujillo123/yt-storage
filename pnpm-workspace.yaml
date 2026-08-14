@@ -1,0 +1,11 @@
+packages:
+  - 'packages/*'
+  - 'api'
+  - 'web'
+
+# Native addons this project genuinely needs compiled. pnpm blocks install
+# scripts by default; without these two the SQLite driver and the Reed-Solomon
+# encoder have no binding to load.
+onlyBuiltDependencies:
+  - better-sqlite3
+  - '@ronomon/reed-solomon'

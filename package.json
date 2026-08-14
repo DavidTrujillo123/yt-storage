@@ -1,0 +1,17 @@
+{
+  "name": "yt-storage",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "setup": "pnpm install && pnpm rebuild -r && pnpm run build",
+    "redis:up": "docker compose up -d redis",
+    "redis:down": "docker compose down",
+    "api": "pnpm -F @yt-storage/api dev:api",
+    "worker": "pnpm -F @yt-storage/api dev:worker",
+    "web": "pnpm -F @yt-storage/web build",
+    "build": "pnpm -F @yt-storage/codec build && pnpm -F @yt-storage/api build && pnpm -F @yt-storage/web build",
+    "test": "pnpm -r test",
+    "codec": "pnpm -F @yt-storage/codec isg",
+    "cookies": "node scripts/get-cookies.mjs"
+  }
+}
