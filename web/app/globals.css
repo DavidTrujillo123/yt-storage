@@ -1,0 +1,506 @@
+:root {
+  --bg: #fbfbfa;
+  --panel: #ffffff;
+  --border: #e3e2df;
+  --text: #1b1b19;
+  --muted: #6b6a66;
+  --accent: #b03a2e;
+  --ok: #2f7a4f;
+  --warn: #a86a1c;
+  --bad: #b03a2e;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16161a;
+    --panel: #1d1d22;
+    --border: #2e2e35;
+    --text: #e8e8e4;
+    --muted: #9a9a95;
+    --accent: #e0715f;
+    --ok: #6cc08a;
+    --warn: #d9a441;
+    --bad: #e0715f;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+main {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 4rem;
+}
+
+header.top {
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+header.top nav {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 0.9rem 1.25rem;
+  display: flex;
+  gap: 1.25rem;
+  align-items: baseline;
+}
+
+header.top .brand {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+header.top a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+header.top a:hover,
+header.top a[data-active='true'] {
+  color: var(--text);
+}
+
+header.top .spacer {
+  margin-left: auto;
+}
+
+h1 {
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.25rem;
+}
+
+h2 {
+  font-size: 1rem;
+  margin: 0 0 0.75rem;
+}
+
+p.lede {
+  color: var(--muted);
+  margin: 0 0 1.5rem;
+}
+
+section.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.1rem;
+  margin-bottom: 1.25rem;
+}
+
+label {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+
+input[type='text'],
+input[type='email'],
+input[type='password'] {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.field {
+  margin-bottom: 0.9rem;
+}
+
+.row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+button,
+.button {
+  font: inherit;
+  padding: 0.45rem 0.85rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-block;
+}
+
+button:hover:not(:disabled),
+.button:hover {
+  border-color: var(--muted);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+
+button.danger {
+  color: var(--bad);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 0.5rem 0.5rem;
+}
+
+td {
+  padding: 0.55rem 0.5rem;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.badge[data-tone='ok'] {
+  color: var(--ok);
+  border-color: currentColor;
+}
+
+.badge[data-tone='busy'] {
+  color: var(--warn);
+  border-color: currentColor;
+}
+
+.badge[data-tone='bad'] {
+  color: var(--bad);
+  border-color: currentColor;
+}
+
+.progress {
+  height: 4px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 0.35rem;
+  max-width: 12rem;
+}
+
+.progress span {
+  display: block;
+  height: 100%;
+  background: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 0.82rem;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+}
+
+.error {
+  color: var(--bad);
+  font-size: 0.85rem;
+  margin: 0.5rem 0 0;
+}
+
+.notice {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: 4px;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 1.25rem;
+}
+
+.empty {
+  color: var(--muted);
+  padding: 1.5rem 0;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 10;
+}
+
+.sheet {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.1rem;
+  width: min(56rem, 100%);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.viewer {
+  margin-top: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  min-height: 8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+
+.viewer img,
+.viewer video {
+  max-width: 100%;
+  max-height: 70vh;
+  display: block;
+}
+
+.viewer audio {
+  width: 100%;
+  margin: 1rem;
+}
+
+.viewer iframe {
+  width: 100%;
+  height: 70vh;
+  border: 0;
+}
+
+.viewer pre {
+  margin: 0;
+  padding: 0.9rem;
+  width: 100%;
+  align-self: stretch;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+}
+
+.entries li + li {
+  border-top: 1px solid var(--border);
+}
+
+.entries button {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  text-align: left;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 0.55rem 0.8rem;
+}
+
+.entries button:hover {
+  background: var(--bg);
+  filter: brightness(1.08);
+}
+
+/* A hex dump is a grid; wrapping it destroys the only thing it is good for. */
+.viewer pre.hex {
+  white-space: pre;
+  word-break: normal;
+  overflow-x: auto;
+}
+
+/* ---- phones ---------------------------------------------------------------
+   Tables become cards. Five columns cannot be read at 390px, and a page that
+   scrolls sideways to reach the Delete button is worse than no table at all:
+   every row is a block, the header is dropped, and each cell carries its own
+   label from data-label. */
+@media (max-width: 44rem) {
+  main {
+    padding: 1.1rem 0.9rem 3rem;
+  }
+
+  header.top nav {
+    padding: 0.75rem 0.9rem;
+    gap: 0.9rem;
+    flex-wrap: wrap;
+  }
+
+  h1 {
+    font-size: 1.2rem;
+  }
+
+  section.panel {
+    padding: 0.9rem;
+  }
+
+  table,
+  tbody,
+  tr,
+  td {
+    display: block;
+    width: 100%;
+  }
+
+  thead {
+    display: none;
+  }
+
+  tr {
+    border-top: 1px solid var(--border);
+    padding: 0.75rem 0;
+  }
+
+  tr:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  td {
+    border: 0;
+    padding: 0.2rem 0;
+    display: flex;
+    gap: 0.75rem;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+
+  td[data-label]::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    flex: 0 0 auto;
+  }
+
+  /* The name and the actions want the whole width, not half of it. */
+  td[data-label='']::before {
+    content: none;
+  }
+
+  td[data-wide] {
+    display: block;
+  }
+
+  td[data-wide]::before {
+    display: block;
+    margin-bottom: 0.15rem;
+  }
+
+  td .row {
+    gap: 0.5rem;
+  }
+
+  td .row > button,
+  td .row > a.button,
+  td .row > * > button,
+  td .row > * > a.button {
+    flex: 1 1 auto;
+    text-align: center;
+    min-height: 2.5rem;
+    line-height: 1.6;
+  }
+
+  .progress {
+    max-width: none;
+  }
+
+  /* Long ids and hashes must not push the page sideways. */
+  .mono {
+    overflow-wrap: anywhere;
+  }
+
+  .overlay {
+    padding: 0;
+    align-items: stretch;
+  }
+
+  .sheet {
+    border-radius: 0;
+    border: 0;
+    width: 100%;
+    max-height: 100vh;
+    padding: 0.9rem;
+  }
+
+  .viewer pre {
+    font-size: 0.72rem;
+    padding: 0.6rem;
+  }
+
+  .viewer iframe,
+  .viewer img,
+  .viewer video {
+    max-height: 60vh;
+  }
+
+  input[type='file'] {
+    max-width: 100%;
+  }
+}
+
+.split {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 46rem) {
+  .split {
+    grid-template-columns: 1fr 1fr;
+  }
+}
