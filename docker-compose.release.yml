@@ -1,0 +1,66 @@
+# Running a published image, with no clone and nothing to build.
+#
+# Download this one file onto the target machine and:
+#
+#   YTS_IMAGE=ghcr.io/<owner>/yt-storage:latest docker compose -f docker-compose.release.yml up -d
+#
+# Same three services as docker-compose.yml; the only difference is that the
+# image is pulled rather than built here.
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: yt-storage-redis
+    command: redis-server --save 60 1 --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    image: ${YTS_IMAGE:?set YTS_IMAGE to the published image, e.g. ghcr.io/owner/yt-storage:latest}
+    container_name: yt-storage-api
+    environment: &env
+      REDIS_HOST: redis
+      REDIS_PORT: '6379'
+      # Empty is fine: one is generated on first boot and kept in the data
+      # volume, which is what lets this come up with nothing prepared.
+      SECRET_KEY: ${SECRET_KEY:-}
+      # Must match the redirect URI registered in every Google Cloud project,
+      # so set it to the address you actually reach this machine at.
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:3000/accounts/callback}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-false}
+      SEED_ADMIN: ${SEED_ADMIN:-true}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@yt-storage.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Abcd1234}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5368709120}
+      TZ: ${TZ:-UTC}
+    ports:
+      - '${PORT:-3000}:3000'
+    volumes:
+      - data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    image: ${YTS_IMAGE:?set YTS_IMAGE to the published image, e.g. ghcr.io/owner/yt-storage:latest}
+    container_name: yt-storage-worker
+    command: ['node', 'dist/worker.js']
+    environment: *env
+    volumes:
+      - data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  data:
