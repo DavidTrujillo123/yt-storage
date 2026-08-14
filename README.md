@@ -12,21 +12,43 @@ web              the UI: a Next.js static export, no server of its own
 
 ## Getting it running
 
-With Docker — three containers, nothing to install but Docker itself:
+With Docker — three containers, nothing to install but Docker itself, and
+nothing to prepare:
 
 ```bash
-cp api/.env.example .env            # set SECRET_KEY
 docker compose up -d --build
 ```
 
 Everything is on <http://localhost:3000>: the UI at `/`, the API under `/api`.
+Sign in with the account it creates for itself:
+
+```
+admin@yt-storage.com
+Abcd1234
+```
+
+**Change it immediately.** The password above is printed in this file, so an
+instance still using it can be signed into by anyone who can reach the machine —
+over Tailscale, over the LAN — and this app stores cookie jars that authenticate
+every Google service on the accounts you connect, not just YouTube. Changing it
+is the first step of `/setup`, where the login lands you while the default is
+still in place.
+
+Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` before the first boot to seed your own
+instead, or `SEED_ADMIN=false` for none at all. The account is created only when
+that email has none; an existing password is never overwritten by a restart.
+
+`SECRET_KEY` is likewise optional now: with none set, one is generated on first
+boot and written to `$DATA_DIR/secret.key` inside the data volume. It encrypts
+every credential the app holds, so back it up with the database — and set it
+explicitly if you would rather it not live there.
 
 Or natively, which is faster to iterate on:
 
 ```bash
 pnpm install && pnpm rebuild -r     # -r builds the native addons
 pnpm run redis:up                   # Redis on 6380
-cp api/.env.example api/.env        # then set SECRET_KEY
+cp api/.env.example api/.env        # optional: nothing in it is required
 pnpm run build
 pnpm run api                        # terminal 1
 pnpm run worker                     # terminal 2
@@ -60,14 +82,68 @@ dist/worker.js`, so a pattern containing the full path matches nothing and you
 end up with several workers competing for the same jobs.
 
 `SECRET_KEY` encrypts every YouTube credential at rest — client secrets, refresh
-tokens, cookie jars:
+tokens, cookie jars. One is generated on first boot if you set none; to bring
+your own:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
+The API and the worker are separate processes on one data directory and must
+agree on the key, so whichever starts first writes `secret.key` and the other
+reads it. Deleting that file makes every stored credential undecryptable.
+
 Registration is open while the instance has no users, then closes. Set
-`ALLOW_REGISTRATION=true` to let more people in.
+`ALLOW_REGISTRATION=true` to let more people in. Passwords are at least 8
+characters; the rule is enforced when one is set, never when one is entered, so
+a short password gets "wrong email or password" like any other wrong one.
+
+## Putting it on another machine
+
+A version tag is the deploy. `.github/workflows/release.yml` builds the image on
+push of a `v*` tag and publishes it to GHCR:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+amd64 and arm64 are built on runners of their own architecture rather than one
+under emulation — the image compiles `better-sqlite3` and the Reed-Solomon addon
+from C++, and QEMU turns that from minutes into most of an hour. Both land under
+one name, so a pull gets the right one either way.
+
+On the target machine nothing needs cloning. Take `docker-compose.release.yml`,
+which pulls instead of building:
+
+```bash
+curl -O https://raw.githubusercontent.com/<owner>/yt-storage/main/docker-compose.release.yml
+YTS_IMAGE=ghcr.io/<owner>/yt-storage:latest \
+  docker compose -f docker-compose.release.yml up -d
+```
+
+Then <http://localhost:3000>, sign in as `admin@yt-storage.com` / `Abcd1234`,
+and change it — see above for why that matters.
+
+Two things to set for anything other than a local trial:
+
+- `PORT` and `GOOGLE_REDIRECT_URI` must agree with the address you actually
+  reach the machine at, and the redirect URI must match what is registered in
+  each Google Cloud project. Changing it later breaks every account already
+  connected.
+- `SECRET_KEY`, if you would rather it not live in the data volume. Moving an
+  instance means carrying that key and the `data` volume together; either alone
+  is useless.
+
+Upgrading is the same command with a newer tag:
+
+```bash
+YTS_IMAGE=ghcr.io/<owner>/yt-storage:v0.2.0 \
+  docker compose -f docker-compose.release.yml up -d --pull always
+```
+
+The database migrates itself (`DB_SYNC`) and the data volume is untouched, so
+accounts and files survive. Back up the `data` volume before a version you have
+not run before — there are no down migrations.
 
 ## How accounts work
 
@@ -79,7 +155,8 @@ channel** — a second channel only adds capacity if it brings its own project.
 That is why client credentials live on the account row rather than in the
 environment.
 
-Per account, once:
+`/setup` in the UI walks all of this, reading each step's state back from the
+API so you can leave and return. What it does, spelled out:
 
 1. Google Cloud: new project → enable *YouTube Data API v3* → *Google Auth
    Platform* → Web application client with redirect URI
@@ -104,6 +181,7 @@ Per account, once:
 
    ```bash
    pnpm run cookies
+   YTS_API=http://your-host:3000 YTS_ACCOUNT=<account id> pnpm run cookies
    ```
 
    That opens your browser against a **brand new throwaway profile**, waits for
@@ -111,6 +189,11 @@ Per account, once:
    the point — nothing ever opens that profile again, so no second client rotates
    the session behind the app's back. It runs on the machine with the browser and
    talks to the API over HTTP, so it works against a container too.
+
+   `YTS_API` is the origin you would open in a browser, not the API root — the
+   `/api` prefix is added for you. `YTS_ACCOUNT` skips the account prompt;
+   `/setup` prints the whole line with both already filled in. `YTS_EMAIL` and
+   `YTS_PASSWORD` skip the sign-in prompts.
 
    A private window cannot be read at all: its cookies live only in memory and
    never touch disk. And `POST /accounts/:id/cookies/from-browser` reads your
@@ -178,8 +261,10 @@ redirect URI, which keeps its address.
 | Route | |
 |---|---|
 | `POST /auth/register` `/login` `/logout`, `GET /auth/me` | session in an httpOnly cookie |
+| `POST /auth/password` | change it; every other session is dropped |
+| `GET /auth/bootstrap` | unauthenticated: is registration open, is the shipped password still in use |
 | `GET/POST /accounts`, `DELETE /accounts/:id` | YouTube accounts |
-| `GET /accounts/:id/connect` | start OAuth for that account |
+| `GET /accounts/:id/connect?return=setup` | start OAuth for that account |
 | `POST /accounts/:id/cookies` | store its cookie jar |
 | `POST /accounts/:id/cookies/from-browser` | read a local browser profile (see the warning above) |
 | `POST /files` | multipart upload; several parts become one archive |

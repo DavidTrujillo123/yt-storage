@@ -104,6 +104,42 @@ a careless `find()` cannot leak them.
 
 Uploads cost 1,600 of 10,000 daily units — six per account per day.
 
+### Onboarding, and the tradeoff it makes
+
+A fresh `docker compose up` has to reach a usable app with nothing prepared, so
+two things happen on first boot:
+
+- **`SECRET_KEY` is generated if unset** and written to `$DATA_DIR/secret.key`.
+  The api and worker are separate processes on one data directory and must agree
+  on the key, so the write uses an exclusive create (`wx`) and the loser of that
+  race reads back the winner's key. Nothing else in the app knows this happened —
+  `resolveSecretKey` runs before Nest and puts the result on the environment.
+- **An administrator is seeded** — `admin@yt-storage.com` / `Abcd1234` by
+  default — keyed on the email, never on the table being empty. An existing
+  password is never overwritten, so restarting is not destructive, and deleting
+  the account brings it back.
+
+The tradeoff is real and deliberate: a documented password on a box reachable
+over Tailscale means anyone who finds it owns the cookie jars, which authenticate
+every Google service. It is bounded rather than ignored — changing the password
+is step 1 of `/setup`, the login page advertises the credential *only* while the
+`auth.defaultAdmin` setting says it is still in use, the API warns on every boot
+until then, and `SEED_ADMIN=false` opts out. `POST /auth/password` drops every
+other session for that user, because a shipped credential is one somebody else
+may already have used.
+
+The password minimum is 8, enforced when a password is **set** and never when one
+is **entered**: a login DTO that validates length locks out older accounts and
+tells an attacker the policy. Short passwords get `wrong email or password` like
+any other wrong one.
+
+`/setup` itself stores nothing. Each step is derived from `/status` and
+`/auth/bootstrap`, so it cannot disagree with the instance, and returning from
+Google's consent screen lands where the instance actually is. That return path
+rides in the OAuth `state` as `<accountId>|<target>` where target is one of two
+allowlisted values — `state` is data that leaves the app and comes back under
+someone else's control, so it selects a fixed path or it selects nothing.
+
 ### Cookies, and why they are the fragile part
 
 API-uploaded videos from an unaudited project are **locked private forever**.
@@ -252,10 +288,11 @@ the lock.
 
 ### 5.2 Frontend — built, unexercised against a real upload
 
-`web/` is a Next.js App Router UI. Four screens: sign in (offers registration
-only while the instance has none), files (3 s polling, live status, upload with
-progress, download, delete), accounts (add, OAuth, cookie jar, quota), and a
-redirect from `/`.
+`web/` is a Next.js App Router UI. Five screens: sign in (offers registration
+only while the instance has none), setup (the four-step wizard, all of its state
+derived from the API), files (3 s polling, live status, upload with progress,
+download, delete), accounts (add, OAuth, cookie jar, quota), and a redirect from
+`/`.
 
 **There is no frontend server.** Every page is a client component, so the UI is
 a static export (`output: 'export'`) that the NestJS process serves with
@@ -299,7 +336,8 @@ a working account — see 5.1.
   periodic rebuilds or a self-update step.
 - **`scripts/get-cookies.mjs` needs a GUI**, so it runs on the desktop and talks
   to the API over HTTP. That is deliberate and correct — do not try to move it
-  into the container.
+  into the container. `YTS_API` is the **origin**, not the API root: the script
+  adds the `/api` prefix itself. It did not, for a while, and every call 404'd.
 - **Docker on a Mac** cannot use VideoToolbox, but the encoder is libx264
   (software) anyway. Only matters if hardware encoding is ever added.
 
