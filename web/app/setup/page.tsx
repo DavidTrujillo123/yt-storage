@@ -73,6 +73,7 @@ function Setup() {
       {params.get('connected') === '1' && (
         <div className="notice">Google authorisation completed.</div>
       )}
+      <RedirectMismatch origin={origin} redirectUri={status.redirectUri} />
       {error && <p className="error">{error}</p>}
 
       <div className="stack">
@@ -86,7 +87,12 @@ function Setup() {
         </Step>
 
         <Step n={2} title="Add a YouTube account" done={created} current={secured && !created}>
-          <CreateAccount origin={origin} onDone={refresh} onError={setError} />
+          <CreateAccount
+            origin={origin}
+            redirectUri={status.redirectUri}
+            onDone={refresh}
+            onError={setError}
+          />
         </Step>
 
         <Step
@@ -135,6 +141,48 @@ function Setup() {
         </section>
       )}
     </>
+  );
+}
+
+/**
+ * The one misconfiguration that cannot be discovered by trying.
+ *
+ * `GOOGLE_REDIRECT_URI` is where the server tells Google to send the browser
+ * back. If it names an address this instance is not reached at — the default
+ * localhost while you are on a LAN IP or a Tailscale name, a port that only
+ * matches inside the container — step 3 fails with `redirect_uri_mismatch`
+ * after the consent screen, which looks like a problem with the Cloud project
+ * rather than with this server's environment.
+ */
+function RedirectMismatch({ origin, redirectUri }: { origin: string; redirectUri: string }) {
+  if (!origin) return null;
+
+  let configured: string;
+  try {
+    configured = new URL(redirectUri).origin;
+  } catch {
+    return (
+      <div className="notice" style={{ borderLeftColor: 'var(--bad)' }}>
+        <strong>GOOGLE_REDIRECT_URI is not a valid URL</strong> (<span className="mono">{redirectUri}</span>).
+        Authorising an account will fail until it is set to{' '}
+        <span className="mono">{origin}/accounts/callback</span>.
+      </div>
+    );
+  }
+
+  if (configured === origin) return null;
+
+  return (
+    <div className="notice" style={{ borderLeftColor: 'var(--bad)' }}>
+      <strong>This server expects to be reached at a different address.</strong> You are on{' '}
+      <span className="mono">{origin}</span>, but <span className="mono">GOOGLE_REDIRECT_URI</span>{' '}
+      is <span className="mono">{redirectUri}</span>. Google sends the browser back to the second
+      one, so step 3 will fail with <span className="mono">redirect_uri_mismatch</span>.
+      <div style={{ marginTop: '0.4rem' }}>
+        Set it to <span className="mono">{origin}/accounts/callback</span> in the environment,
+        restart, and register that same value in the Google Cloud project. All three have to agree.
+      </div>
+    </div>
   );
 }
 
@@ -254,10 +302,12 @@ function SecurePassword({
 
 function CreateAccount({
   origin,
+  redirectUri,
   onDone,
   onError,
 }: {
   origin: string;
+  redirectUri: string;
   onDone: () => Promise<void>;
   onError: (message: string) => void;
 }) {
@@ -288,10 +338,11 @@ function CreateAccount({
       <ol className="small muted" style={{ paddingLeft: '1.1rem' }}>
         <li>Create a project at console.cloud.google.com and enable YouTube Data API v3.</li>
         <li>
-          Create an OAuth client of type <strong>Web application</strong> with this redirect URI:
-          <Copyable text={`${origin}/accounts/callback`} />
-          It must match <span className="mono">GOOGLE_REDIRECT_URI</span> on the server, and it is
-          deliberately outside <span className="mono">/api</span>.
+          Create an OAuth client of type <strong>Web application</strong> with this redirect URI,
+          copied exactly — it is what the server will actually send Google:
+          <Copyable text={redirectUri} />
+          It sits outside <span className="mono">/api</span> deliberately, and changing it later
+          breaks every account already connected.
         </li>
         <li>
           Set the publishing status to <strong>In production</strong>, not Testing. In Testing,

@@ -84,6 +84,8 @@ export interface Status {
   canUpload: boolean;
   uploadsLeftToday: number;
   files: Partial<Record<FileStatus, number>>;
+  /** What the server will send Google as the callback address. */
+  redirectUri: string;
 }
 
 export interface TarEntry {
