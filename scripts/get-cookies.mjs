@@ -26,7 +26,14 @@ import { tmpdir, platform } from 'node:os';
 import { join } from 'node:path';
 import { stdin, stdout } from 'node:process';
 
-const API = process.env.YTS_API ?? 'http://localhost:3000';
+/**
+ * YTS_API is the origin you open in a browser, not the API root. Every route
+ * lives under /api — the UI and the API share one port, so the prefix is what
+ * separates them — and that prefix is added here rather than being something to
+ * remember.
+ */
+const ORIGIN = (process.env.YTS_API ?? 'http://localhost:3000').replace(/\/+$/, '');
+const api = (path) => `${ORIGIN}/api${path}`;
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** macOS keeps browsers in .app bundles; elsewhere they are on PATH. */
@@ -144,11 +151,11 @@ async function main() {
       : await rl.question(`browser (${available.join(', ')}): `));
   const binary = resolveBrowser(browser);
 
-  console.log(`\nSigning in to the API at ${API}`);
+  console.log(`\nSigning in to the API at ${ORIGIN}`);
   const email = process.env.YTS_EMAIL ?? (await rl.question('email: '));
   const password = process.env.YTS_PASSWORD ?? (await rl.question('password: '));
 
-  const login = await fetch(`${API}/auth/login`, {
+  const login = await fetch(api('/auth/login'), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email, password }),
@@ -156,13 +163,21 @@ async function main() {
   if (!login.ok) throw new Error(`login failed: ${(await login.json()).message}`);
   const session = login.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ');
 
-  const accounts = await (await fetch(`${API}/accounts`, { headers: { cookie: session } })).json();
+  const accounts = await (await fetch(api('/accounts'), { headers: { cookie: session } })).json();
   if (accounts.length === 0) throw new Error('no YouTube accounts configured yet');
 
-  let account = accounts[0];
-  if (accounts.length > 1) {
+  // YTS_ACCOUNT is what makes the command the setup page prints a single paste:
+  // it already knows which account you are standing on.
+  let account;
+  if (process.env.YTS_ACCOUNT) {
+    account = accounts.find((a) => a.id === process.env.YTS_ACCOUNT);
+    if (!account) throw new Error(`no account ${process.env.YTS_ACCOUNT} on this instance`);
+  } else if (accounts.length === 1) {
+    account = accounts[0];
+  } else {
     accounts.forEach((a, i) => console.log(`  ${i + 1}) ${a.label}`));
     account = accounts[Number(await rl.question('account: ')) - 1];
+    if (!account) throw new Error('that is not one of the accounts listed');
   }
 
   const profileDir = await mkdtemp(join(tmpdir(), 'yts-profile-'));
@@ -202,7 +217,7 @@ Waiting for sign-in`);
 
     const form = new FormData();
     form.append('file', new Blob([await readFile(jarPath)]), 'cookies.txt');
-    const stored = await fetch(`${API}/accounts/${account.id}/cookies`, {
+    const stored = await fetch(api(`/accounts/${account.id}/cookies`), {
       method: 'POST',
       headers: { cookie: session },
       body: form,
