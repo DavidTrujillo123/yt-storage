@@ -59,10 +59,11 @@ export class YtAccount {
   @Column({ type: 'datetime', nullable: true })
   cookieCheckedAt!: Date | null;
 
-  /** Quota units spent today. videos.insert costs 1,600 of 10,000. */
+  /** Uploads made in the Pacific day that `quotaResetAt` falls in, of 100. */
   @Column({ type: 'integer', default: 0 })
-  quotaUsed!: number;
+  uploadsToday!: number;
 
+  /** Anchors which Pacific day `uploadsToday` counts; see `quotaIsStale`. */
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   quotaResetAt!: Date;
 

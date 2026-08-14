@@ -13,7 +13,7 @@ import { CookieHealth, YtAccount } from './yt-account.entity';
 import { filterCookieJar, hasSessionCookie } from './cookie-jar';
 import { CookieLock } from './cookie-lock';
 import { quotaIsStale, quotaSummary, selectUploadAccount } from './quota';
-import { OAUTH_SCOPES, UPLOAD_QUOTA_COST } from '../youtube/constants';
+import { OAUTH_SCOPES } from '../youtube/constants';
 
 /**
  * Where the browser lands after Google sends it back, as a closed set.
@@ -49,7 +49,7 @@ const WITH_SECRETS = {
   refreshToken: true,
   cookieJar: true,
   cookieHealth: true,
-  quotaUsed: true,
+  uploadsToday: true,
   quotaResetAt: true,
 } as const;
 
@@ -332,16 +332,26 @@ export class AccountsService {
     return choice.account;
   }
 
-  async chargeQuota(accountId: string, units = UPLOAD_QUOTA_COST): Promise<void> {
+  /**
+   * `quotaResetAt` moves only when the upload opens a new Pacific day, because
+   * it is the anchor that `quotaIsStale` compares against: rewriting it on
+   * every upload would keep pushing the day forward and the counter would
+   * never clear.
+   */
+  async recordUpload(accountId: string): Promise<void> {
     const account = await this.loadSecretById(accountId);
     const stale = quotaIsStale(account);
     await this.accounts.update(accountId, {
-      quotaUsed: (stale ? 0 : account.quotaUsed) + units,
+      uploadsToday: (stale ? 0 : account.uploadsToday) + 1,
       ...(stale ? { quotaResetAt: new Date() } : {}),
     });
   }
 
-  quotaSummary(account: YtAccount): { used: number; remaining: number; uploadsLeft: number } {
+  quotaSummary(account: YtAccount): {
+    uploadsUsed: number;
+    uploadsLeft: number;
+    dailyLimit: number;
+  } {
     return quotaSummary(account);
   }
 }

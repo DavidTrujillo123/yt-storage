@@ -15,6 +15,18 @@ export const OAUTH_SCOPES = [
 
 export const REFRESH_TOKEN_KEY = 'youtube.refreshToken';
 
-/** Quota: 10,000 units/day, videos.insert costs 1,600. */
-export const UPLOAD_QUOTA_COST = 1600;
-export const DAILY_QUOTA = 10_000;
+/**
+ * What YouTube actually enforces on uploads, which is not what the docs say.
+ *
+ * The documented model is 10,000 quota units a day with `videos.insert` at
+ * 1,600 of them, capping a project at six uploads. Measured against a live
+ * project on 14 Aug 2026, that is not what happens: nine uploads in one day
+ * all succeeded, the Cloud Console's `Queries per day` counter stayed at 0
+ * throughout, and `Video Uploads per day` tracked every one of them. The
+ * counter that moves is the one that binds.
+ *
+ * So the budget modelled here is the upload count. The unit budget is left
+ * out entirely rather than tracked alongside — this app makes no other Data
+ * API call, so there is nothing else that could spend units.
+ */
+export const DAILY_UPLOAD_LIMIT = 100;
