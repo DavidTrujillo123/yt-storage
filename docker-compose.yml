@@ -21,9 +21,15 @@ services:
     environment: &env
       REDIS_HOST: redis
       REDIS_PORT: '6379'
-      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env - see api/.env.example}
+      # Optional: empty means one is generated on first boot and kept in the
+      # data volume, which is what lets this stack come up with no .env at all.
+      SECRET_KEY: ${SECRET_KEY:-}
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:3000/accounts/callback}
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-false}
+      # Both services read the same values; only the api process seeds.
+      SEED_ADMIN: ${SEED_ADMIN:-true}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@yt-storage.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Abcd1234}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5368709120}
       TZ: ${TZ:-UTC}
     ports:
