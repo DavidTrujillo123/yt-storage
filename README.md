@@ -107,6 +107,9 @@ push of a `v*` tag and publishes it to GHCR:
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
+The image tags drop the `v`, so `v0.1.0` publishes `:0.1.0`, `:0.1` and
+`:latest`. Pull `:0.1.0`.
+
 amd64 and arm64 are built on runners of their own architecture rather than one
 under emulation — the image compiles `better-sqlite3` and the Reed-Solomon addon
 from C++, and QEMU turns that from minutes into most of an hour. Both land under
@@ -148,13 +151,18 @@ Two things to set for anything other than a local trial:
 Upgrading is the same command with a newer tag:
 
 ```bash
-YTS_IMAGE=ghcr.io/davidtrujillo123/yt-storage:v0.2.0 \
+YTS_IMAGE=ghcr.io/davidtrujillo123/yt-storage:0.2.0 \
   docker compose -f docker-compose.release.yml up -d --pull always
 ```
 
 The database migrates itself (`DB_SYNC`) and the data volume is untouched, so
 accounts and files survive. Back up the `data` volume before a version you have
 not run before — there are no down migrations.
+
+Both compose files name their containers, so a released stack and a
+built-from-source one cannot run side by side on the same host. On a machine
+that only deploys, that is what you want; to run both, override
+`container_name` and `PORT`.
 
 ## How accounts work
 
