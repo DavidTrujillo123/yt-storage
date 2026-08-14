@@ -116,8 +116,8 @@ On the target machine nothing needs cloning. Take `docker-compose.release.yml`,
 which pulls instead of building:
 
 ```bash
-curl -O https://raw.githubusercontent.com/<owner>/yt-storage/main/docker-compose.release.yml
-YTS_IMAGE=ghcr.io/<owner>/yt-storage:latest \
+curl -O https://raw.githubusercontent.com/DavidTrujillo123/yt-storage/main/docker-compose.release.yml
+YTS_IMAGE=ghcr.io/davidtrujillo123/yt-storage:latest \
   docker compose -f docker-compose.release.yml up -d
 ```
 
@@ -137,7 +137,7 @@ Two things to set for anything other than a local trial:
 Upgrading is the same command with a newer tag:
 
 ```bash
-YTS_IMAGE=ghcr.io/<owner>/yt-storage:v0.2.0 \
+YTS_IMAGE=ghcr.io/davidtrujillo123/yt-storage:v0.2.0 \
   docker compose -f docker-compose.release.yml up -d --pull always
 ```
 

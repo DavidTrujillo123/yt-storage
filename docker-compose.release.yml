@@ -2,7 +2,7 @@
 #
 # Download this one file onto the target machine and:
 #
-#   YTS_IMAGE=ghcr.io/<owner>/yt-storage:latest docker compose -f docker-compose.release.yml up -d
+#   YTS_IMAGE=ghcr.io/davidtrujillo123/yt-storage:latest docker compose -f docker-compose.release.yml up -d
 #
 # Same three services as docker-compose.yml; the only difference is that the
 # image is pulled rather than built here.
@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
 
   api:
-    image: ${YTS_IMAGE:?set YTS_IMAGE to the published image, e.g. ghcr.io/owner/yt-storage:latest}
+    image: ${YTS_IMAGE:?set YTS_IMAGE to the published image, e.g. ghcr.io/davidtrujillo123/yt-storage:latest}
     container_name: yt-storage-api
     environment: &env
       REDIS_HOST: redis
@@ -48,7 +48,7 @@ services:
     restart: unless-stopped
 
   worker:
-    image: ${YTS_IMAGE:?set YTS_IMAGE to the published image, e.g. ghcr.io/owner/yt-storage:latest}
+    image: ${YTS_IMAGE:?set YTS_IMAGE to the published image, e.g. ghcr.io/davidtrujillo123/yt-storage:latest}
     container_name: yt-storage-worker
     command: ['node', 'dist/worker.js']
     environment: *env
