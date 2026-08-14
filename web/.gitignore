@@ -1,0 +1,9 @@
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+
+# The static export. Built by `pnpm run web`, served by the API process.
+# The directory itself is tracked so the API has something to serve.
+out/*
+!out/.gitkeep
