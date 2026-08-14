@@ -8,6 +8,7 @@ import { Session, User } from './user.entity';
 
 export const SESSION_COOKIE = 'yts_session';
 const SESSION_DAYS = 30;
+export const MIN_PASSWORD_LENGTH = 8;
 
 @Injectable()
 export class AuthService {
@@ -32,25 +33,82 @@ export class AuthService {
     if (!(await this.registrationOpen())) {
       throw new UnauthorizedException('registration is closed on this instance');
     }
-    if (password.length < 12) {
-      throw new ConflictException('password must be at least 12 characters');
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      throw new ConflictException(`password must be at least ${MIN_PASSWORD_LENGTH} characters`);
     }
 
-    const normalised = email.trim().toLowerCase();
+    const normalised = normaliseEmail(email);
     if (await this.users.findOne({ where: { email: normalised } })) {
       throw new ConflictException('that email is already registered');
     }
 
     const user = this.users.create({
       email: normalised,
-      passwordHash: await argon2.hash(password, { type: argon2.argon2id }),
+      passwordHash: await this.hash(password),
     });
     return this.users.save(user);
   }
 
+  /**
+   * Creates a user if that email is free, and reports whether it did.
+   *
+   * Separate from `register` because the seeder runs precisely when
+   * registration is closed, and because it must never touch an existing
+   * account: a returning `false` is the guarantee that nobody's password was
+   * overwritten by a restart.
+   */
+  async ensureUser(email: string, password: string): Promise<boolean> {
+    const normalised = normaliseEmail(email);
+    if (await this.users.findOne({ where: { email: normalised } })) return false;
+
+    await this.users.save(
+      this.users.create({ email: normalised, passwordHash: await this.hash(password) }),
+    );
+    return true;
+  }
+
+  /**
+   * Changes a password and drops every other session for that user.
+   *
+   * The other sessions are the point. This exists mainly to retire a default
+   * credential, and a default credential is one anybody may already have used —
+   * leaving their cookie alive would make the change cosmetic.
+   */
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+    keepToken?: string,
+  ): Promise<void> {
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      throw new ConflictException(`password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+    }
+
+    const user = await this.users.findOne({
+      where: { id: userId },
+      select: { id: true, passwordHash: true },
+    });
+    if (!user) throw new UnauthorizedException('not signed in');
+
+    const ok = await argon2.verify(user.passwordHash, currentPassword).catch(() => false);
+    if (!ok) throw new UnauthorizedException('current password is wrong');
+
+    await this.users.update(userId, { passwordHash: await this.hash(newPassword) });
+    await this.sessions
+      .createQueryBuilder()
+      .delete()
+      .where('userId = :userId', { userId })
+      .andWhere(keepToken ? 'token != :keepToken' : '1 = 1', { keepToken })
+      .execute();
+  }
+
+  private hash(password: string): Promise<string> {
+    return argon2.hash(password, { type: argon2.argon2id });
+  }
+
   async login(email: string, password: string): Promise<{ token: string; expiresAt: Date }> {
     const user = await this.users.findOne({
-      where: { email: email.trim().toLowerCase() },
+      where: { email: normaliseEmail(email) },
       select: { id: true, email: true, passwordHash: true },
     });
 
@@ -85,6 +143,11 @@ export class AuthService {
   async purgeExpired(): Promise<void> {
     await this.sessions.delete({ expiresAt: LessThan(new Date()) });
   }
+}
+
+/** One spelling of an address, so a seeded admin and a typed login are the same row. */
+export function normaliseEmail(email: string): string {
+  return email.trim().toLowerCase();
 }
 
 /** A real Argon2id hash of a value nobody knows, used to equalise login timing. */
