@@ -1,0 +1,436 @@
+'use client';
+
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
+import { api, ApiError } from '@/lib/api';
+import type { Account, Bootstrap, Status } from '@/lib/api';
+import { useSession } from '@/lib/use-session';
+
+/** useSearchParams needs a boundary; the OAuth callback returns with ?connected=1. */
+export default function SetupPage() {
+  return (
+    <Suspense fallback={<p className="muted">Loading…</p>}>
+      <Setup />
+    </Suspense>
+  );
+}
+
+/**
+ * The path from a bare instance to one that can store a file.
+ *
+ * Every step's state is read back from `/status` and `/auth/bootstrap` rather
+ * than tracked here, so the wizard has nothing of its own to lose: reloading,
+ * or coming back from Google's consent screen, lands exactly where the instance
+ * actually is.
+ */
+function Setup() {
+  const session = useSession();
+  const params = useSearchParams();
+  const [status, setStatus] = useState<Status | null>(null);
+  const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [next, info] = await Promise.all([
+        api<Status>('/status'),
+        api<Bootstrap>('/auth/bootstrap'),
+      ]);
+      setStatus(next);
+      setBootstrap(info);
+    } catch (failure) {
+      if (!(failure instanceof ApiError && failure.status === 401)) setError((failure as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (session) void refresh();
+  }, [session, refresh]);
+
+  // Read after mount, never during render: this page is prerendered at build
+  // time, and reading `location` in the render pass makes the server and client
+  // markup disagree.
+  const origin = useOrigin();
+
+  if (!session || !status || !bootstrap) return <p className="muted">Checking this instance…</p>;
+
+  const account = status.accounts[0] ?? null;
+  const secured = !bootstrap.defaultAdmin;
+  const created = account !== null;
+  const connected = account?.connected === true;
+  const cookied = account?.hasCookies === true && account.cookieHealth === 'OK';
+  const done = secured && created && connected && cookied;
+
+  return (
+    <>
+      <h1>Setup</h1>
+      <p className="lede">
+        Four things stand between a fresh instance and its first stored file. This page reads the
+        real state of each one, so you can leave and come back.
+      </p>
+
+      {params.get('connected') === '1' && (
+        <div className="notice">Google authorisation completed.</div>
+      )}
+      {error && <p className="error">{error}</p>}
+
+      <div className="stack">
+        <Step n={1} title="Secure this instance" done={secured} current={!secured}>
+          <SecurePassword
+            email={bootstrap.defaultAdmin ?? ''}
+            minLength={bootstrap.minPasswordLength}
+            onDone={refresh}
+            onError={setError}
+          />
+        </Step>
+
+        <Step n={2} title="Add a YouTube account" done={created} current={secured && !created}>
+          <CreateAccount origin={origin} onDone={refresh} onError={setError} />
+        </Step>
+
+        <Step
+          n={3}
+          title="Authorise with Google"
+          done={connected}
+          current={created && !connected}
+          summary={account ? `${account.label} is connected` : undefined}
+        >
+          <p className="small muted">
+            This is the round trip that returns a refresh token, which is what lets the app upload
+            without you present. If Google sends you back without one, revoke the app at
+            <span className="mono"> myaccount.google.com/permissions</span> and try again.
+          </p>
+          {account && (
+            <a className="button" href={`/api/accounts/${account.id}/connect?return=setup`}>
+              Authorise {account.label}
+            </a>
+          )}
+        </Step>
+
+        <Step
+          n={4}
+          title="Give it cookies"
+          done={cookied}
+          current={connected && !cookied}
+          summary={account ? `cookie jar stored and healthy` : undefined}
+        >
+          {account && (
+            <Cookies account={account} origin={origin} onDone={refresh} onError={setError} />
+          )}
+        </Step>
+      </div>
+
+      {done && (
+        <section className="panel" style={{ marginTop: '1.25rem' }}>
+          <h2>Ready</h2>
+          <p className="small muted">
+            {status.uploadsLeftToday} upload{status.uploadsLeftToday === 1 ? '' : 's'} left today —
+            quota is per Cloud project, and one upload costs 1,600 of 10,000 units regardless of
+            file size.
+          </p>
+          <Link className="button" href="/files">
+            Go to Files
+          </Link>
+        </section>
+      )}
+    </>
+  );
+}
+
+/** A step shows its body while it is the one to do, and a single line once it is not. */
+function Step({
+  n,
+  title,
+  done,
+  current,
+  summary,
+  children,
+}: {
+  n: number;
+  title: string;
+  done: boolean;
+  current: boolean;
+  summary?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="panel" style={{ opacity: done || current ? 1 : 0.55 }}>
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <h2 style={{ margin: 0 }}>
+          {n}. {title}
+        </h2>
+        <span className="badge" data-tone={done ? 'ok' : current ? 'busy' : undefined}>
+          {done ? 'done' : current ? 'do this now' : 'waiting'}
+        </span>
+      </div>
+      {done ? (
+        summary && <p className="small muted">{summary}</p>
+      ) : current ? (
+        <div style={{ marginTop: '0.75rem' }}>{children}</div>
+      ) : (
+        <p className="small muted">Finish the step above first.</p>
+      )}
+    </section>
+  );
+}
+
+function SecurePassword({
+  email,
+  minLength,
+  onDone,
+  onError,
+}: {
+  email: string;
+  minLength: number;
+  onDone: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await api('/auth/password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      setCurrentPassword('');
+      setNewPassword('');
+      await onDone();
+    } catch (failure) {
+      onError((failure as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <p className="small muted">
+        <span className="mono">{email}</span> is still on the password this app ships with, which is
+        printed in its README. This instance will hold cookie jars that authenticate every Google
+        service on that account — not just YouTube — so anyone who reaches this page and has not
+        been stopped here owns those accounts.
+      </p>
+      <form onSubmit={submit} style={{ maxWidth: '24rem' }}>
+        <div className="field">
+          <label htmlFor="currentPassword">Current password</label>
+          <input
+            id="currentPassword"
+            type="password"
+            autoComplete="current-password"
+            value={currentPassword}
+            onChange={(event) => setCurrentPassword(event.target.value)}
+            required
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="newPassword">New password</label>
+          <input
+            id="newPassword"
+            type="password"
+            autoComplete="new-password"
+            value={newPassword}
+            onChange={(event) => setNewPassword(event.target.value)}
+            minLength={minLength}
+            required
+          />
+        </div>
+        <button className="primary" type="submit" disabled={busy}>
+          {busy ? 'Changing…' : 'Change password'}
+        </button>
+      </form>
+      <p className="small muted">
+        Every other session is signed out when you do this. There is no reset flow, so keep the new
+        one somewhere you will find it.
+      </p>
+    </>
+  );
+}
+
+function CreateAccount({
+  origin,
+  onDone,
+  onError,
+}: {
+  origin: string;
+  onDone: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [label, setLabel] = useState('');
+  const [clientId, setClientId] = useState('');
+  const [clientSecret, setClientSecret] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await api('/accounts', { method: 'POST', body: JSON.stringify({ label, clientId, clientSecret }) });
+      await onDone();
+    } catch (failure) {
+      onError((failure as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <p className="small muted">
+        An account is one Google Cloud project plus one YouTube channel. Quota is charged per
+        project, so a second channel only adds capacity if it brings its own project.
+      </p>
+      <ol className="small muted" style={{ paddingLeft: '1.1rem' }}>
+        <li>Create a project at console.cloud.google.com and enable YouTube Data API v3.</li>
+        <li>
+          Create an OAuth client of type <strong>Web application</strong> with this redirect URI:
+          <Copyable text={`${origin}/accounts/callback`} />
+          It must match <span className="mono">GOOGLE_REDIRECT_URI</span> on the server, and it is
+          deliberately outside <span className="mono">/api</span>.
+        </li>
+        <li>
+          Set the publishing status to <strong>In production</strong>, not Testing. In Testing,
+          Google expires refresh tokens after 7 days and the account dies every week. Unverified
+          production is fine — click through the warning.
+        </li>
+      </ol>
+      <form onSubmit={submit} style={{ maxWidth: '28rem' }}>
+        <div className="field">
+          <label htmlFor="label">Label</label>
+          <input id="label" type="text" value={label} onChange={(e) => setLabel(e.target.value)} required />
+        </div>
+        <div className="field">
+          <label htmlFor="clientId">OAuth client id</label>
+          <input id="clientId" type="text" value={clientId} onChange={(e) => setClientId(e.target.value)} required />
+        </div>
+        <div className="field">
+          <label htmlFor="clientSecret">OAuth client secret</label>
+          <input
+            id="clientSecret"
+            type="password"
+            value={clientSecret}
+            onChange={(e) => setClientSecret(e.target.value)}
+            required
+          />
+        </div>
+        <button className="primary" type="submit" disabled={busy}>
+          {busy ? 'Saving…' : 'Add account'}
+        </button>
+      </form>
+    </>
+  );
+}
+
+function Cookies({
+  account,
+  origin,
+  onDone,
+  onError,
+}: {
+  account: Account;
+  origin: string;
+  onDone: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const input = useRef<HTMLInputElement | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function upload(file: File) {
+    const body = new FormData();
+    body.append('file', file);
+    try {
+      const stored = await api<{ kept: number; dropped: number }>(
+        `/accounts/${account.id}/cookies`,
+        { method: 'POST', body },
+      );
+      setResult(`kept ${stored.kept} cookies, discarded ${stored.dropped} from unrelated domains`);
+      await onDone();
+    } catch (failure) {
+      onError((failure as Error).message);
+    }
+  }
+
+  return (
+    <>
+      <p className="small muted">
+        The OAuth token uploads, but it cannot download: every video this app creates is private,
+        and a private video is only served to a signed-in browser session. That session is the
+        cookie jar.
+      </p>
+
+      <h3 style={{ marginBottom: '0.35rem' }}>Run this on the machine with your browser</h3>
+      <Copyable text={`YTS_API=${origin} YTS_ACCOUNT=${account.id} pnpm run cookies`} />
+      <p className="small muted">
+        It opens a brand new, throwaway browser profile, waits for you to sign in to YouTube, takes
+        the jar and deletes the profile. Nothing ever opens that profile again, which is the point —
+        Google rotates session cookies on use, and a jar shared with a browser you keep using is
+        invalidated within minutes.
+      </p>
+
+      <h3 style={{ marginBottom: '0.35rem' }}>Or upload a cookies.txt</h3>
+      <p className="small muted">
+        Export it in Netscape format from a private window, then close that window <em>without</em>{' '}
+        signing out — signing out ends the session server-side and the exported jar with it.
+      </p>
+      <div className="row">
+        <button onClick={() => input.current?.click()}>Upload cookies.txt</button>
+        <input
+          ref={input}
+          type="file"
+          accept=".txt"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void upload(file);
+            event.target.value = '';
+          }}
+        />
+        {result && <span className="small muted">{result}</span>}
+      </div>
+
+      <p className="small" style={{ color: 'var(--warn)' }}>
+        A jar authenticates every Google service on that account, not just YouTube. Use a throwaway
+        account that is not the recovery address for anything else.
+      </p>
+    </>
+  );
+}
+
+/**
+ * The address this instance is being used at, which is what belongs in a
+ * redirect URI and in a command someone runs elsewhere. Empty until mounted so
+ * the prerendered markup and the first client render agree.
+ */
+function useOrigin(): string {
+  const [origin, setOrigin] = useState('');
+  useEffect(() => setOrigin(window.location.origin), []);
+  return origin;
+}
+
+/** A command is only useful here if it can be taken in one click. */
+function Copyable({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <div className="row" style={{ margin: '0.4rem 0 0.6rem' }}>
+      <code className="mono" style={{ wordBreak: 'break-all' }}>
+        {text}
+      </code>
+      <button
+        onClick={() => {
+          void navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          });
+        }}
+      >
+        {copied ? 'copied' : 'copy'}
+      </button>
+    </div>
+  );
+}

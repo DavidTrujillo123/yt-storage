@@ -68,6 +68,17 @@ export interface Account {
   createdAt: string;
 }
 
+/**
+ * What the login page can know before anyone is signed in. `defaultAdmin` is
+ * the seeded address while it is still on its shipped password, and null the
+ * moment that changes.
+ */
+export interface Bootstrap {
+  registrationOpen: boolean;
+  defaultAdmin: string | null;
+  minPasswordLength: number;
+}
+
 export interface Status {
   accounts: Account[];
   canUpload: boolean;
