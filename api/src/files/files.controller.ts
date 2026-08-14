@@ -45,8 +45,8 @@ export class FilesController {
   /**
    * One file, or many bundled into one.
    *
-   * Many is the interesting case. An upload costs 1,600 quota units whatever it
-   * weighs, so six a day is the entire budget: a folder of photos sent one file
+   * Many is the interesting case. An upload counts as one whatever it weighs,
+   * and a hundred a day is the entire budget: a folder of photos sent one file
    * per request is not slow, it is impossible. Several files arriving together
    * are written into a single tar here and stored as one video, which the whole
    * pipeline downstream then treats as an ordinary file.

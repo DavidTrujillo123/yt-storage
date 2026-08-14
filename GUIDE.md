@@ -140,7 +140,7 @@ Upload a file (or a folder — several files become one archive automatically) a
 
 ### 7. Worth knowing before you rely on it
 
-- **One account gets about six uploads a day** (~90 GiB) — YouTube's quota, not a setting you can raise.
+- **One account gets 100 uploads a day** (~1.5 TiB) — YouTube's limit, not a setting you can raise. It clears at midnight US Pacific, not at your midnight.
 - **Use a home internet connection, not a server/VPS,** to retrieve files — YouTube blocks datacenter IPs with bot checks.
 - **Back up `api/data/yt-storage.db`** — losing it is recoverable but slow, since the filename and hash are also embedded in each video itself.
 - **This runs against YouTube's Terms of Service.** A couple of personal accounts is unremarkable; running many Cloud projects to multiply quota is the pattern Google's abuse detection looks for. Keep a real backup of anything irreplaceable.

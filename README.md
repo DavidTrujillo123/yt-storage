@@ -300,9 +300,9 @@ quota, lose its cookies, or be deleted while a file sits in the queue.
 
 ## Many files at once
 
-An upload costs 1,600 quota units whatever it weighs, so **six uploads a day** is
-the entire budget while one video holds ~15 GiB. Sending a folder of photos one
-file per upload is not slow, it is impossible.
+An upload counts as one whatever it weighs, so **a hundred uploads a day** is the
+entire budget while one video holds ~15 GiB. Sending a folder of a thousand
+photos one file per upload is not slow, it is impossible.
 
 So several files in one request are written into a single tar — `writeTar` in
 `api/src/files/tar.ts`, no dependency — and stored as one video. Folder
@@ -346,7 +346,20 @@ redirect URI, which keeps its address.
 | Video bloat | ~4.4x the payload |
 | Encode speed | ~0.64 MiB/s |
 | Per video | ~15 GiB (YouTube's 12-hour cap) |
-| Per account per day | 6 uploads (10,000 quota units, 1,600 each) ≈ 90 GiB |
+| Per account per day | 100 uploads ≈ 1.5 TiB |
+
+Note that this is **not** the limit the YouTube Data API documents. The published
+model is a 10,000-unit daily budget with `videos.insert` at 1,600 units, which
+would cap an account at six uploads. Measured against a live project, nine
+uploads in one day all succeeded while the Cloud Console's `Queries per day`
+counter stayed at 0 and `Video Uploads per day` counted every one — so the
+count is what binds, and it is the count this app tracks.
+
+The day here is Google's, not yours: the allowance clears at midnight US
+Pacific, so an account emptied in the evening is full again long before your own
+morning if you are east of it. The counter is local — it counts what this server
+uploaded and never asks Google — so it is right only for uploads this server
+made.
 
 ## Things worth knowing before trusting it
 

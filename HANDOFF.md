@@ -102,7 +102,10 @@ halves: client id/secret *and* refresh token *and* cookie jar. All secrets are
 AES-256-GCM encrypted with `SECRET_KEY` and marked `select: false` in TypeORM so
 a careless `find()` cannot leak them.
 
-Uploads cost 1,600 of 10,000 daily units — six per account per day.
+The daily allowance is 100 uploads per account, counted per Cloud project and
+cleared at midnight US Pacific. Not 10,000 quota units at 1,600 per upload as
+the API docs describe — see `DAILY_UPLOAD_LIMIT` in
+`api/src/youtube/constants.ts` for the measurement that settled it.
 
 ### Onboarding, and the tradeoff it makes
 

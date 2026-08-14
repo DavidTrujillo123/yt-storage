@@ -77,9 +77,9 @@ degradation ever happened. `simulateYouTube` uses `-crf` with `-b:v 0`.
 | Encode speed | ~0.64 MiB/s of payload (M-series, 10 cores) |
 
 YouTube's 12-hour cap puts roughly 15 GiB of data in a single video. The
-Data API allows about 6 uploads/day (10,000 quota units, 1,600 per upload),
-so ~90 GiB/day through the API — or unlimited by uploading through YouTube
-Studio manually and pasting the video id.
+Data API allows 100 uploads/day per Cloud project, so ~1.5 TiB/day through the
+API — or unlimited by uploading through YouTube Studio manually and pasting the
+video id.
 
 ## Layout
 

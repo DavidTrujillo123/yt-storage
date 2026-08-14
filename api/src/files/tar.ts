@@ -5,9 +5,9 @@ import { pipeline } from 'node:stream/promises';
 /**
  * A ustar writer and reader, in about a hundred lines and no dependency.
  *
- * Uploading costs 1,600 quota units per video regardless of size, so six
- * uploads a day is the whole budget — a folder of fifty photos sent one file
- * at a time is not slow, it is impossible. Bundling them into one archive
+ * An upload counts as one against the daily allowance whatever it weighs, and
+ * the allowance is a hundred — so a folder of five hundred photos sent one
+ * file at a time is not slow, it is impossible. Bundling them into one archive
  * makes it one upload, and tar is the format that does that without
  * re-compressing already-compressed bytes.
  *
