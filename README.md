@@ -112,6 +112,17 @@ under emulation — the image compiles `better-sqlite3` and the Reed-Solomon add
 from C++, and QEMU turns that from minutes into most of an hour. Both land under
 one name, so a pull gets the right one either way.
 
+**The published package starts private**, and a public repository does not
+change that — GHCR defaults every package pushed with `GITHUB_TOKEN` to private,
+so an anonymous pull answers 404 rather than "unauthorized". Either flip it once
+at *Packages → yt-storage → Package settings → Change visibility → Public*, or
+leave it private and authenticate on each machine with a token that has
+`read:packages`:
+
+```bash
+echo "$GHCR_PAT" | docker login ghcr.io -u DavidTrujillo123 --password-stdin
+```
+
 On the target machine nothing needs cloning. Take `docker-compose.release.yml`,
 which pulls instead of building:
 
