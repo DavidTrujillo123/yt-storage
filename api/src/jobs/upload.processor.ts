@@ -7,9 +7,9 @@ import { YoutubeService } from '../youtube/youtube.service';
 import { FileJob, UPLOAD_QUEUE, VERIFY_QUEUE, verifyJobOptions } from './queues';
 
 /**
- * Concurrency is 1 and there is no retry storm on purpose: videos.insert costs
- * 1,600 of an account's 10,000 daily quota units, so a blind retry loop burns
- * that account's six uploads in seconds.
+ * Concurrency is 1 and there is no retry storm on purpose: every videos.insert
+ * spends one of an account's hundred uploads for the day, so a blind retry
+ * loop burns the whole allowance in minutes.
  */
 @Processor(UPLOAD_QUEUE, { concurrency: 1 })
 export class UploadProcessor extends WorkerHost {

@@ -38,6 +38,13 @@ export class YoutubeService {
     const youtube = this.client(account);
     const total = statSync(videoPath).size;
 
+    // Counted before the call, not after: this is a simple upload rather than
+    // a resumable one, so a connection dropped at 90% is a full retry, and an
+    // insert YouTube accepted and then lost still spent the day's allowance.
+    // Counting on success only would drift below the real figure exactly when
+    // the day was going badly.
+    await this.accounts.recordUpload(account.id);
+
     const response = await youtube.videos.insert(
       {
         part: ['snippet', 'status'],
@@ -63,7 +70,6 @@ export class YoutubeService {
     const videoId = response.data.id;
     if (!videoId) throw new Error('upload succeeded but YouTube returned no video id');
 
-    await this.accounts.chargeQuota(account.id);
     this.log.log(`uploaded ${videoId} via ${account.label}`);
     return videoId;
   }
