@@ -15,6 +15,30 @@ import { CookieLock } from './cookie-lock';
 import { quotaIsStale, quotaSummary, selectUploadAccount } from './quota';
 import { OAUTH_SCOPES, UPLOAD_QUOTA_COST } from '../youtube/constants';
 
+/**
+ * Where the browser lands after Google sends it back, as a closed set.
+ *
+ * `state` is data that leaves this app and comes back under someone else's
+ * control, so it never reaches a redirect as text. It selects one of these
+ * fixed paths or it selects nothing.
+ */
+const RETURN_PATHS = {
+  accounts: '/accounts?connected=1',
+  setup: '/setup?connected=1',
+} as const;
+
+export type ReturnTarget = keyof typeof RETURN_PATHS;
+
+export function isReturnTarget(value: unknown): value is ReturnTarget {
+  return typeof value === 'string' && value in RETURN_PATHS;
+}
+
+/** Splits the `<accountId>|<target>` state, tolerating the older id-only form. */
+export function parseOAuthState(state: string): { accountId: string; returnTo: string } {
+  const [accountId, target] = state.split('|');
+  return { accountId, returnTo: isReturnTarget(target) ? RETURN_PATHS[target] : RETURN_PATHS.accounts };
+}
+
 /** Secret columns are `select: false`, so they must be asked for by name. */
 const WITH_SECRETS = {
   id: true,
@@ -117,14 +141,15 @@ export class AccountsService {
    * account then silently dies the first time its access token expires.
    *
    * The account id rides in `state` so the callback knows which of a user's
-   * accounts it is completing.
+   * accounts it is completing, followed by where to send the browser afterwards
+   * — the wizard and the accounts page both start this round trip.
    */
-  authUrl(account: YtAccount): string {
+  authUrl(account: YtAccount, returnTo: ReturnTarget = 'accounts'): string {
     return this.oauthClient(account).generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
       scope: OAUTH_SCOPES,
-      state: account.id,
+      state: `${account.id}|${returnTo}`,
     });
   }
 

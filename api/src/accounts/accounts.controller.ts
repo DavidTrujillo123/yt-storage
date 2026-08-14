@@ -18,7 +18,7 @@ import type { Response } from 'express';
 import { SessionGuard } from '../auth/session.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { User } from '../auth/user.entity';
-import { AccountsService } from './accounts.service';
+import { AccountsService, isReturnTarget, parseOAuthState } from './accounts.service';
 
 class ImportCookiesDto {
   @IsString()
@@ -67,9 +67,14 @@ export class AccountsController {
 
   @Get(':id/connect')
   @UseGuards(SessionGuard)
-  async connect(@CurrentUser() user: User, @Param('id') id: string, @Res() res: Response) {
+  async connect(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Res() res: Response,
+    @Query('return') returnTo?: string,
+  ) {
     const account = await this.accounts.loadSecret(user.id, id);
-    res.redirect(this.accounts.authUrl(account));
+    res.redirect(this.accounts.authUrl(account, isReturnTarget(returnTo) ? returnTo : 'accounts'));
   }
 
   /**
@@ -87,11 +92,14 @@ export class AccountsController {
     if (error) throw new BadRequestException(`Google returned: ${error}`);
     if (!code || !state) throw new BadRequestException('missing code or state in the callback');
 
-    await this.accounts.completeOAuth(state, code);
+    const { accountId, returnTo } = parseOAuthState(state);
+    await this.accounts.completeOAuth(accountId, code);
 
     // Google lands a person's browser here, so it should end up somewhere a
-    // person can use. Same origin, so the path is enough.
-    res.redirect('/accounts?connected=1');
+    // person can use — the page they started from. Same origin, so the path is
+    // enough, and `returnTo` is one of a fixed set rather than anything the
+    // round trip carried back.
+    res.redirect(returnTo);
   }
 
   @Post(':id/cookies')
