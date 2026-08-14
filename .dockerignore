@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+**/.next
+**/data
+**/.env
+**/fixtures
+**/*.mp4
+**/*.webm
+.git

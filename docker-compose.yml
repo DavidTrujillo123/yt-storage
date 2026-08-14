@@ -1,0 +1,58 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: yt-storage-redis
+    command: redis-server --save 60 1 --appendonly yes
+    ports:
+      - '${REDIS_PORT:-6380}:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build: .
+    image: yt-storage:latest
+    container_name: yt-storage-api
+    environment: &env
+      REDIS_HOST: redis
+      REDIS_PORT: '6379'
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env - see api/.env.example}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-http://localhost:3000/accounts/callback}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-false}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5368709120}
+      TZ: ${TZ:-UTC}
+    ports:
+      - '${PORT:-3000}:3000'
+    volumes:
+      - data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Same image, different entry point. The processors must not share a process
+  # with the HTTP server: encoding pins a core for minutes and every request
+  # landing there would hang.
+  worker:
+    build: .
+    image: yt-storage:latest
+    container_name: yt-storage-worker
+    command: ['node', 'dist/worker.js']
+    environment: *env
+    volumes:
+      - data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  data:
