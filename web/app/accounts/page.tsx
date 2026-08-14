@@ -181,8 +181,14 @@ function Accounts() {
                   <td className="muted" data-label="Quota today">
                     <div>
                       {account.quota.uploadsLeft} upload{account.quota.uploadsLeft === 1 ? '' : 's'} left
+                      {/*
+                        Says "used", and puts the used figure first: the line
+                        underneath a header reading "Quota today" is read as
+                        spend by everyone who sees it, and it used to show the
+                        remainder, which inverts the meaning of the cell.
+                      */}
                       <div className="small">
-                        {account.quota.remaining} of {account.quota.used + account.quota.remaining} units
+                        {account.quota.uploadsUsed} of {account.quota.dailyLimit} used today
                       </div>
                     </div>
                   </td>

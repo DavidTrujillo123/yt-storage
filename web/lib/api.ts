@@ -63,7 +63,8 @@ export interface Account {
   hasCookies: boolean;
   cookieHealth: 'MISSING' | 'OK' | 'STALE';
   cookieCheckedAt: string | null;
-  quota: { used: number; remaining: number; uploadsLeft: number };
+  /** Counted in uploads against YouTube's 100/day, not in quota units. */
+  quota: { uploadsUsed: number; uploadsLeft: number; dailyLimit: number };
   ready: boolean;
   createdAt: string;
 }
@@ -103,8 +104,8 @@ export function entryUrl(id: string, index: number, inline = false): string {
  * The files here are large enough that a form with no feedback is unusable.
  *
  * Several files go in one request and come back as one archive, because an
- * upload costs 1,600 quota units whatever it weighs — six a day, total. Sending
- * a folder file by file would spend the whole day's budget on six photos.
+ * upload counts as one whatever it weighs — a hundred a day, total. Sending a
+ * folder file by file would spend the whole day's budget on a hundred photos.
  */
 /**
  * Reads every file into memory before a byte is sent.

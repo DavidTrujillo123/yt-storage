@@ -132,8 +132,8 @@ function Setup() {
           <h2>Ready</h2>
           <p className="small muted">
             {status.uploadsLeftToday} upload{status.uploadsLeftToday === 1 ? '' : 's'} left today —
-            quota is per Cloud project, and one upload costs 1,600 of 10,000 units regardless of
-            file size.
+            the allowance is 100 a day per Cloud project, and an upload counts as one regardless
+            of file size.
           </p>
           <Link className="button" href="/files">
             Go to Files
