@@ -7,7 +7,7 @@ import { api, ApiError } from '@/lib/api';
 import type { Account, Bootstrap, CookieCapture, Status } from '@/lib/api';
 import { useSession } from '@/lib/use-session';
 import { useCookieCapture } from '@/lib/use-capture';
-import { RemoteBrowser } from '@/app/remote-browser';
+import { ReopenSignIn } from '@/app/remote-browser';
 
 /** useSearchParams needs a boundary; the OAuth callback returns with ?connected=1. */
 export default function SetupPage() {
@@ -492,13 +492,16 @@ function CaptureButton({
   onDone: () => Promise<void>;
   onError: (message: string) => void;
 }) {
-  const { progress, running, starting, error, start, cancel } = useCookieCapture(account.id, onDone);
+  const remote = capture.mode === 'remote';
+  const { progress, running, starting, error, blocked, start, cancel, reopen } = useCookieCapture(
+    account.id,
+    onDone,
+    { remote },
+  );
 
   useEffect(() => {
     if (error) onError(error);
   }, [error, onError]);
-
-  const remote = capture.mode === 'remote';
 
   return (
     <>
@@ -506,9 +509,10 @@ function CaptureButton({
       <p className="small muted">
         {remote ? (
           <>
-            This server runs its own {capture.browserName} on a screen it keeps to itself, and shows
-            it here. Sign in to the account behind <strong>{account.label}</strong> in the panel that
-            appears, exactly as you would in any browser.
+            A browser window opens with a {capture.browserName} the server runs itself — nothing is
+            installed on your machine, and nothing has to be, which is what makes this work under
+            Docker. Sign in to the account behind <strong>{account.label}</strong> in that window,
+            exactly as you would in any browser.
           </>
         ) : (
           <>
@@ -541,7 +545,7 @@ function CaptureButton({
         {running && <button onClick={() => void cancel()}>Cancel</button>}
       </div>
 
-      {progress?.viewUrl && <RemoteBrowser url={progress.viewUrl} />}
+      {progress?.viewUrl && <ReopenSignIn blocked={blocked} onReopen={reopen} />}
 
       {progress && progress.state !== 'IDLE' && (
         <p

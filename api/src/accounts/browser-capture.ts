@@ -32,11 +32,12 @@ import { VNC_PATH } from './vnc-proxy';
 const SIGN_IN_URL = 'https://accounts.google.com/ServiceLogin?service=youtube';
 
 /**
- * noVNC's own page, pointed at the proxy. `resize=scale` is what makes a
- * 1280x800 desktop fit a panel in a wizard step; `reconnect` covers the moment
- * the display is still coming up when the iframe loads.
+ * noVNC's bare page rather than its full one: no toolbar, no settings panel,
+ * no connect dialog — this window is a browser showing a browser, and every
+ * control noVNC would add to the frame is one more thing that makes it look
+ * like something other than the sign-in it is.
  */
-const VIEW_URL = `/vnc/vnc.html?autoconnect=1&resize=scale&reconnect=1&path=${VNC_PATH.replace(/^\//, '')}`;
+const VIEW_URL = `/vnc/vnc_lite.html?scale=true&path=${VNC_PATH.replace(/^\//, '')}`;
 
 /** How long someone gets to complete a Google sign-in before we give up. */
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;

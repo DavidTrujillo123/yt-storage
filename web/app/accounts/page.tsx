@@ -6,8 +6,8 @@ import { useSearchParams } from 'next/navigation';
 import { api, ApiError, formatWhen } from '@/lib/api';
 import type { Account, CookieCapture, Status } from '@/lib/api';
 import { useSession } from '@/lib/use-session';
-import { useCookieCapture } from '@/lib/use-capture';
-import { RemoteBrowser } from '@/app/remote-browser';
+import { openSignInWindow, useCookieCapture } from '@/lib/use-capture';
+import { ReopenSignIn } from '@/app/remote-browser';
 
 const HEALTH_TONE = { OK: 'ok', STALE: 'bad', MISSING: 'busy' } as const;
 
@@ -21,14 +21,19 @@ const HEALTH_TONE = { OK: 'ok', STALE: 'bad', MISSING: 'busy' } as const;
  */
 function CapturePanel({
   account,
+  remote,
   onDone,
   onClose,
 }: {
   account: Account;
+  remote: boolean;
   onDone: () => Promise<void>;
   onClose: () => void;
 }) {
-  const { progress, running, error, cancel } = useCookieCapture(account.id, onDone, true);
+  const { progress, running, error, blocked, cancel, reopen } = useCookieCapture(account.id, onDone, {
+    autoStart: true,
+    remote,
+  });
   const failed = progress?.state === 'FAILED';
 
   return (
@@ -53,7 +58,7 @@ function CapturePanel({
         )}
       </p>
 
-      {progress?.viewUrl && <RemoteBrowser url={progress.viewUrl} />}
+      {progress?.viewUrl && <ReopenSignIn blocked={blocked} onReopen={reopen} />}
 
       <p className="small muted">
         Sign in with the Google account behind this channel. Do not sign out afterwards — that ends
@@ -227,6 +232,7 @@ function Accounts() {
       {capturing && accounts?.some((account) => account.id === capturing) && (
         <CapturePanel
           account={accounts.find((account) => account.id === capturing)!}
+          remote={capture?.mode === 'remote'}
           onDone={refresh}
           onClose={() => setCapturing(null)}
         />
@@ -288,7 +294,17 @@ function Accounts() {
                         {account.connected ? 'Re-authorise' : 'Connect'}
                       </a>
                       {capture?.available && (
-                        <button onClick={() => setCapturing(account.id)}>Capture cookies</button>
+                        <button
+                          onClick={() => {
+                            // Opened here rather than in the panel that follows:
+                            // the panel starts its capture from an effect, and a
+                            // window opened outside a click is a blocked popup.
+                            if (capture.mode === 'remote') openSignInWindow();
+                            setCapturing(account.id);
+                          }}
+                        >
+                          Capture cookies
+                        </button>
                       )}
                       <button onClick={() => cookieInputs.current[account.id]?.click()}>Upload cookies</button>
                       <input

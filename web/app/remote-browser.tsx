@@ -1,38 +1,30 @@
 'use client';
 
 /**
- * The server's own browser, embedded.
+ * The line under the button when the server's browser is up.
  *
- * Behind the iframe is noVNC talking to a Chromium running on a virtual display
- * inside the API process's container, over a WebSocket that only opens for a
- * signed-in session. It is a real browser window with your keyboard and mouse
- * going to it, which is what a Google sign-in needs — Google refuses one from a
- * browser being driven by automation.
- *
- * Sized to the display the server allocates (1280x800) and scaled down to fit,
- * so the aspect ratio is right and nothing is cropped.
+ * The browser itself is a separate window, not a frame in this page: a Google
+ * sign-in embedded in someone else's page is indistinguishable from a phishing
+ * form, and the app should not teach anyone that it is normal. The window is
+ * opened inside the click that starts the capture, before the address for it
+ * exists, because a popup opened later has no user gesture behind it and is
+ * blocked — `blocked` says that happened anyway, which is the one case where
+ * someone has to press something a second time.
  */
-export function RemoteBrowser({ url }: { url: string }) {
+export function ReopenSignIn({ blocked, onReopen }: { blocked: boolean; onReopen: () => void }) {
   return (
-    <div
-      style={{
-        margin: '0.75rem 0',
-        border: '1px solid var(--line, #333)',
-        borderRadius: '6px',
-        overflow: 'hidden',
-        // 1280x800 is 8:5. A fixed ratio keeps the panel from collapsing while
-        // the display is still coming up and the iframe has nothing to show.
-        aspectRatio: '8 / 5',
-        background: '#000',
-      }}
-    >
-      <iframe
-        src={url}
-        title="Sign in to Google"
-        style={{ width: '100%', height: '100%', border: 0, display: 'block' }}
-        // The remote screen is useless without them, and it is same-origin.
-        allow="clipboard-read; clipboard-write"
-      />
-    </div>
+    <p className="small" style={{ color: blocked ? 'var(--warn)' : undefined }}>
+      {blocked ? (
+        <>
+          Your browser blocked the sign-in window. Allow popups for this site, or{' '}
+          <button onClick={onReopen}>open it now</button>.
+        </>
+      ) : (
+        <>
+          The sign-in window is open. Closed it by accident?{' '}
+          <button onClick={onReopen}>Bring it back</button> — the capture is still running.
+        </>
+      )}
+    </p>
   );
 }
