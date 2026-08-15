@@ -10,3 +10,6 @@ data/
 # The auto-generated encryption key. Normally it lives under DATA_DIR, which is
 # ignored above - but DATA_DIR is configurable, so match it by name too.
 secret.key
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+graft/
