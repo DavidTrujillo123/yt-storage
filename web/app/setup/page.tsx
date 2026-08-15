@@ -4,15 +4,9 @@ import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
-import type {
-  Account,
-  Bootstrap,
-  CaptureProgress,
-  CaptureState,
-  CookieCapture,
-  Status,
-} from '@/lib/api';
+import type { Account, Bootstrap, CookieCapture, Status } from '@/lib/api';
 import { useSession } from '@/lib/use-session';
+import { useCookieCapture } from '@/lib/use-capture';
 
 /** useSearchParams needs a boundary; the OAuth callback returns with ?connected=1. */
 export default function SetupPage() {
@@ -477,17 +471,9 @@ function Cookies({
   );
 }
 
-/** States where the server still has a browser open and something to report. */
-const RUNNING: CaptureState[] = ['LAUNCHING', 'WAITING_FOR_LOGIN', 'CAPTURING'];
-
 /**
  * The last step as one button: the server opens a browser, you sign in, it
  * takes the jar.
- *
- * A sign-in runs for minutes, so the request that starts it returns at once and
- * this polls for where it got to. Everything shown comes from the server's
- * state rather than from anything tracked here, so reloading mid-capture picks
- * the same capture back up.
  *
  * It is *not* a private window, and cannot be: private-window cookies live only
  * in RAM and are never written anywhere readable. A new throwaway profile,
@@ -505,61 +491,11 @@ function CaptureButton({
   onDone: () => Promise<void>;
   onError: (message: string) => void;
 }) {
-  const [progress, setProgress] = useState<CaptureProgress | null>(null);
-  const [starting, setStarting] = useState(false);
-  const running = progress !== null && RUNNING.includes(progress.state);
-
-  // A capture that outlived this page — a reload, a second tab — is adopted on
-  // mount rather than competing with a new one.
-  useEffect(() => {
-    void api<CaptureProgress>(`/accounts/${account.id}/cookies/capture`)
-      .then((current) => {
-        if (current.state !== 'IDLE') setProgress(current);
-      })
-      .catch(() => undefined);
-  }, [account.id]);
+  const { progress, running, starting, error, start, cancel } = useCookieCapture(account.id, onDone);
 
   useEffect(() => {
-    if (!running) return;
-
-    let live = true;
-    const timer = setInterval(async () => {
-      try {
-        const next = await api<CaptureProgress>(`/accounts/${account.id}/cookies/capture`);
-        if (!live) return;
-        setProgress(next);
-        // `refresh` is what flips the step to done; only worth a round trip
-        // once there is something new for it to read.
-        if (next.state === 'DONE') await onDone();
-      } catch (failure) {
-        if (live) onError((failure as Error).message);
-      }
-    }, 2000);
-
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [running, account.id, onDone, onError]);
-
-  async function start() {
-    setStarting(true);
-    try {
-      setProgress(await api<CaptureProgress>(`/accounts/${account.id}/cookies/capture`, { method: 'POST' }));
-    } catch (failure) {
-      onError((failure as Error).message);
-    } finally {
-      setStarting(false);
-    }
-  }
-
-  async function cancel() {
-    try {
-      await api(`/accounts/${account.id}/cookies/capture`, { method: 'DELETE' });
-    } catch (failure) {
-      onError((failure as Error).message);
-    }
-  }
+    if (error) onError(error);
+  }, [error, onError]);
 
   return (
     <>

@@ -4,10 +4,57 @@ import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { api, ApiError, formatWhen } from '@/lib/api';
-import type { Account } from '@/lib/api';
+import type { Account, CookieCapture, Status } from '@/lib/api';
 import { useSession } from '@/lib/use-session';
+import { useCookieCapture } from '@/lib/use-capture';
 
 const HEALTH_TONE = { OK: 'ok', STALE: 'bad', MISSING: 'busy' } as const;
+
+/**
+ * Re-takes an account's cookie jar: opens a throwaway browser profile on the
+ * server, waits for the sign-in, stores what comes out and deletes the profile.
+ *
+ * A jar dies eventually — Google rotates session cookies, and a `STALE` badge
+ * in the row above is the app noticing — so this is the button that keeps an
+ * account working, not just the one that sets it up.
+ */
+function CaptureCookies({
+  account,
+  capture,
+  onDone,
+}: {
+  account: Account;
+  capture: CookieCapture;
+  onDone: () => Promise<void>;
+}) {
+  const { progress, running, starting, error, start, cancel } = useCookieCapture(account.id, onDone);
+
+  if (running) {
+    return (
+      <>
+        <button onClick={() => void cancel()}>Cancel capture</button>
+        <span className="small muted" title={progress?.message}>
+          {progress?.state === 'WAITING_FOR_LOGIN'
+            ? `sign in to ${progress.browserName}…`
+            : 'capturing…'}
+        </span>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <button onClick={() => void start()} disabled={starting}>
+        {starting ? 'Opening…' : `Capture in ${capture.browserName}`}
+      </button>
+      {(error || progress?.state === 'FAILED') && (
+        <span className="small" style={{ color: 'var(--bad)' }}>
+          {error ?? progress?.message}
+        </span>
+      )}
+    </>
+  );
+}
 
 /** useSearchParams needs a boundary; the OAuth callback returns with ?connected=1. */
 export default function AccountsPage() {
@@ -29,9 +76,16 @@ function Accounts() {
   const [busy, setBusy] = useState(false);
   const cookieInputs = useRef<Record<string, HTMLInputElement | null>>({});
 
+  // Whether this server can open a browser itself. A jar expires eventually,
+  // so re-capturing it belongs here rather than only in the wizard — the wizard
+  // hides a step it considers done, which is every day but the first.
+  const [capture, setCapture] = useState<CookieCapture | null>(null);
+
   const refresh = useCallback(async () => {
     try {
-      setAccounts(await api<Account[]>('/accounts'));
+      const [list, status] = await Promise.all([api<Account[]>('/accounts'), api<Status>('/status')]);
+      setAccounts(list);
+      setCapture(status.cookieCapture);
     } catch (failure) {
       if (!(failure instanceof ApiError && failure.status === 401)) setError((failure as Error).message);
     }
@@ -131,11 +185,25 @@ function Accounts() {
             account.
           </p>
           <p className="small muted">
-            The safe way to produce one is step 4 of <Link href="/setup">setup</Link>, or{' '}
-            <span className="mono">pnpm run cookies</span> when this server has no browser of its own: either
-            opens a throwaway profile, extracts the jar and deletes the profile, so nothing ever rotates that
-            session again. Uploading a <span className="mono">cookies.txt</span> below works too — export it
-            from a private window and close the window <em>without</em> logging out.
+            {capture?.available ? (
+              <>
+                The safe way to produce one is <strong>Capture in {capture.browserName}</strong> below: it
+                opens a brand new, empty browser profile on this server, waits for you to sign in to YouTube,
+                takes the jar and deletes the profile. Nothing ever opens that profile again, which is the
+                point — Google rotates session cookies on use, so a jar shared with a browser you keep using
+                is invalidated within minutes.
+              </>
+            ) : (
+              <>
+                The safe way to produce one is <span className="mono">pnpm run cookies</span> on the machine
+                with the browser — this server has none of its own
+                {capture ? <> ({capture.reason})</> : null}. It opens a throwaway profile, extracts the jar
+                and deletes the profile, so nothing ever rotates that session again.
+              </>
+            )}{' '}
+            Uploading a <span className="mono">cookies.txt</span> works too — export it from a private window
+            and close the window <em>without</em> logging out. First-time setup walks the whole thing in{' '}
+            <Link href="/setup">the wizard</Link>.
           </p>
           <p className="small" style={{ color: 'var(--warn)' }}>
             A jar authenticates every Google service, not just YouTube. Use a throwaway account that is not
@@ -199,6 +267,9 @@ function Accounts() {
                       <a className="button" href={`/api/accounts/${account.id}/connect`}>
                         {account.connected ? 'Re-authorise' : 'Connect'}
                       </a>
+                      {capture?.available && (
+                        <CaptureCookies account={account} capture={capture} onDone={refresh} />
+                      )}
                       <button onClick={() => cookieInputs.current[account.id]?.click()}>Upload cookies</button>
                       <input
                         ref={(element) => {

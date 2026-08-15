@@ -2,6 +2,11 @@ node_modules/
 .DS_Store
 .env
 
+# What a natively-run instance keeps: the database with every sealed credential
+# in it, the incoming uploads, the restore cache. A container keeps this in a
+# volume, which is why it went unnoticed here.
+data/
+
 # The auto-generated encryption key. Normally it lives under DATA_DIR, which is
-# already ignored - but DATA_DIR is configurable, so match it by name too.
+# ignored above - but DATA_DIR is configurable, so match it by name too.
 secret.key
