@@ -85,18 +85,15 @@ export interface Bootstrap {
  *
  * False whenever the API is not sharing a machine and a screen with a browser
  * — a container, a headless box — and `reason` is then the one sentence saying
- * which. `isDefault` is false when the OS default is Safari or Firefox: neither
- * can be driven this way, so a Chromium-family browser is used and the UI says
- * which one rather than surprising anyone with an unexpected window.
+ * which. That is the normal case under Docker, where pasting the `cookie:`
+ * header is the capture instead, and it needs nothing on either side.
+ *
+ * `isDefault` is false when the OS default is Safari or Firefox: neither can be
+ * driven this way, so a Chromium-family browser is used and the UI says which
+ * one rather than surprising anyone with an unexpected window.
  */
 export interface CookieCapture {
   available: boolean;
-  /**
-   * `local` opens a browser on the machine running the API, which is yours only
-   * when the API runs natively. `remote` runs the browser the server ships with
-   * and shows it in this page — the only one a container can do.
-   */
-  mode: 'local' | 'remote' | null;
   browser: string | null;
   browserName: string | null;
   isDefault: boolean;
@@ -114,13 +111,36 @@ export type CaptureState =
 
 export interface CaptureProgress {
   state: CaptureState;
-  mode?: 'local' | 'remote';
   browserName?: string;
   message?: string;
   secondsLeft?: number | null;
-  /** Set while the server's own browser is up: where to embed it. */
-  viewUrl?: string | null;
+  /** The Google account the jar turned out to hold, once that is known. */
+  account?: string | null;
   result?: { kept: number; dropped: number; domains: string[] } | null;
+}
+
+/**
+ * One browser profile on the machine with the browser, already signed in to
+ * Google — the unit the capture picker offers.
+ *
+ * `email` comes from the browser's own profile switcher and is usually null:
+ * Brave disables its sign-in by default, and a profile can hold a perfectly
+ * good YouTube session with no email recorded anywhere locally. Which account
+ * it is gets answered after the pick, from the jar itself.
+ */
+export interface BrowserProfile {
+  id: string;
+  browser: string;
+  browserName: string;
+  profile: string;
+  label: string;
+  email: string | null;
+  /**
+   * Whether YouTube's own auth cookie is in that profile. A Google session is
+   * not the same thing — Search and Cloud Console set most of the same cookies
+   * while YouTube stays signed out — and only the YouTube one is usable here.
+   */
+  youtube: boolean;
 }
 
 export interface Status {

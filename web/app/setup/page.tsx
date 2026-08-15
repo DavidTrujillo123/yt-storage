@@ -7,7 +7,8 @@ import { api, ApiError } from '@/lib/api';
 import type { Account, Bootstrap, CookieCapture, Status } from '@/lib/api';
 import { useSession } from '@/lib/use-session';
 import { useCookieCapture } from '@/lib/use-capture';
-import { ReopenSignIn } from '@/app/remote-browser';
+import { CapturePicker } from '@/app/capture-picker';
+import { CookiePaste } from '@/app/cookie-paste';
 
 /** useSearchParams needs a boundary; the OAuth callback returns with ?connected=1. */
 export default function SetupPage() {
@@ -424,30 +425,29 @@ function Cookies({
         cookie jar.
       </p>
 
-      {capture.available ? (
-        <CaptureButton account={account} capture={capture} onDone={onDone} onError={onError} />
-      ) : (
+      <h3 style={{ marginBottom: '0.35rem' }}>Paste the cookie header from your browser</h3>
+      <CookiePaste accountId={account.id} accountLabel={account.label} onDone={onDone} />
+
+      {capture.available && (
         <>
-          <h3 style={{ marginBottom: '0.35rem' }}>Run this on the machine with your browser</h3>
-          <p className="small muted">
-            This server cannot open a browser itself — {capture.reason} — so the capture runs where
-            you are instead. It talks back to this instance over HTTP.
-          </p>
-          <Copyable text={`YTS_API=${origin} YTS_ACCOUNT=${account.id} pnpm run cookies`} />
-          <p className="small muted">
-            It opens a brand new, throwaway browser profile, waits for you to sign in to YouTube,
-            takes the jar and deletes the profile. Nothing ever opens that profile again, which is
-            the point — Google rotates session cookies on use, and a jar shared with a browser you
-            keep using is invalidated within minutes.
-          </p>
+          <h3 style={{ marginBottom: '0.35rem' }}>Or take it from a browser profile here</h3>
+          <CaptureButton
+            account={account}
+            origin={origin}
+            capture={capture}
+            onDone={onDone}
+            onError={onError}
+          />
         </>
       )}
 
       <h3 style={{ marginBottom: '0.35rem' }}>Or upload a cookies.txt</h3>
       <p className="small muted">
-        Export it in Netscape format from a private window, then close that window <em>without</em>{' '}
-        signing out — signing out ends the session server-side and the exported jar with it.
+        Any Netscape-format export works — a cookie exporter extension, or{' '}
+        <span className="mono">pnpm run cookies</span> on a machine with a browser, which signs in to
+        a throwaway profile and deletes it afterwards:
       </p>
+      <Copyable text={`YTS_API=${origin} YTS_ACCOUNT=${account.id} pnpm run cookies`} />
       <div className="row">
         <button onClick={() => input.current?.click()}>Upload cookies.txt</button>
         <input
@@ -473,103 +473,50 @@ function Cookies({
 }
 
 /**
- * The last step as one button: the server opens a browser, you sign in, it
- * takes the jar.
+ * The last step as a choice: which of the browser profiles already signed in to
+ * Google should this account borrow its session from.
  *
- * It is *not* a private window, and cannot be: private-window cookies live only
- * in RAM and are never written anywhere readable. A new throwaway profile,
- * deleted afterwards, is what gives the same guarantee — the session it holds
- * is never opened again, so nothing rotates it out from under this app.
+ * Where those profiles are read is the only difference between the two cases.
+ * Natively the API reads them, because the browser is on its machine. Under
+ * Docker it cannot — a container reaches no browser on the host — so the agent
+ * on loopback reads them and posts the jar back. Same list, same result.
  */
 function CaptureButton({
   account,
-  capture,
+  origin,
+  capture: capability,
   onDone,
   onError,
 }: {
   account: Account;
+  origin: string;
   capture: CookieCapture;
   onDone: () => Promise<void>;
   onError: (message: string) => void;
 }) {
-  const remote = capture.mode === 'remote';
-  const { progress, running, starting, error, blocked, start, cancel, reopen } = useCookieCapture(
-    account.id,
-    onDone,
-    { remote },
-  );
+  const capture = useCookieCapture(account.id, onDone);
 
   useEffect(() => {
-    if (error) onError(error);
-  }, [error, onError]);
+    if (capture.error) onError(capture.error);
+  }, [capture.error, onError]);
 
   return (
     <>
-      <h3 style={{ marginBottom: '0.35rem' }}>Sign in and let this take the jar</h3>
-      <p className="small muted">
-        {remote ? (
+      <CapturePicker
+        capture={capture}
+        accountLabel={account.label}
+        browserName={capability.browserName}
+        emptyExtra={
           <>
-            A browser window opens with a {capture.browserName} the server runs itself — nothing is
-            installed on your machine, and nothing has to be, which is what makes this work under
-            Docker. Sign in to the account behind <strong>{account.label}</strong> in that window,
-            exactly as you would in any browser.
+            <p className="small muted">
+              Or sign in from scratch instead: this opens a brand new, throwaway profile, waits for
+              the sign-in and deletes the profile afterwards, so nothing ever rotates that session
+              again.
+            </p>
+            <Copyable text={`YTS_API=${origin} YTS_ACCOUNT=${account.id} pnpm run cookies`} />
           </>
-        ) : (
-          <>
-            Opens {capture.browserName} on the machine running this server, with a brand new, empty
-            profile. Sign in to the account behind <strong>{account.label}</strong>.
-          </>
-        )}{' '}
-        The profile is deleted the moment its cookies are out — nothing ever opens it again, which is
-        the point. Google rotates session cookies on use, so a jar shared with a browser you keep
-        using is invalidated within minutes.
-        {!remote && !capture.isDefault && (
-          <>
-            {' '}
-            Your default browser cannot be driven this way — only Chromium-family ones can — so{' '}
-            {capture.browserName} is used instead.
-          </>
-        )}
-      </p>
-
-      <div className="row">
-        <button className="primary" onClick={() => void start()} disabled={starting || running}>
-          {running
-            ? 'Waiting…'
-            : starting
-              ? 'Starting…'
-              : remote
-                ? 'Open a browser and sign in'
-                : `Open ${capture.browserName} and sign in`}
-        </button>
-        {running && <button onClick={() => void cancel()}>Cancel</button>}
-      </div>
-
-      {progress?.viewUrl && <ReopenSignIn blocked={blocked} onReopen={reopen} />}
-
-      {progress && progress.state !== 'IDLE' && (
-        <p
-          className="small"
-          style={{
-            color:
-              progress.state === 'FAILED'
-                ? 'var(--bad)'
-                : progress.state === 'DONE'
-                  ? 'var(--ok)'
-                  : undefined,
-          }}
-        >
-          {progress.message}
-          {progress.state === 'WAITING_FOR_LOGIN' && typeof progress.secondsLeft === 'number' && (
-            <span className="muted"> ({Math.ceil(progress.secondsLeft / 60)} min left)</span>
-          )}
-        </p>
-      )}
-
-      <p className="small muted">
-        Do not sign out in that window afterwards. Signing out ends the session on Google&apos;s
-        side, and the jar with it.
-      </p>
+        }
+      />
     </>
   );
 }
