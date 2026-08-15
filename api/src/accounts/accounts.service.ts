@@ -7,7 +7,8 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { google } from 'googleapis';
+// One API's client, not every Google API's; see the note in youtube.service.
+import { auth as googleAuth } from '@googleapis/youtube';
 import { SettingsService } from '../common/settings.service';
 import { CookieHealth, YtAccount } from './yt-account.entity';
 import {
@@ -140,8 +141,8 @@ export class AccountsService {
 
   // --- OAuth ---------------------------------------------------------------
 
-  oauthClient(account: YtAccount): InstanceType<typeof google.auth.OAuth2> {
-    return new google.auth.OAuth2(
+  oauthClient(account: YtAccount): InstanceType<typeof googleAuth.OAuth2> {
+    return new googleAuth.OAuth2(
       account.clientId,
       this.settings.openText(account.clientSecret),
       this.config.get<string>('GOOGLE_REDIRECT_URI', 'http://localhost:3000/accounts/callback'),

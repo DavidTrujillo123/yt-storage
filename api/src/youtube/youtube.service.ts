@@ -1,6 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createReadStream, statSync } from 'node:fs';
-import { google, youtube_v3 } from 'googleapis';
+// The single-API package rather than `googleapis`, which carries a client for
+// every Google service there is and was 207 MB of the container on its own.
+// This app calls two endpoints on one of them.
+import { youtube as youtubeApi, youtube_v3 } from '@googleapis/youtube';
 import { AccountsService } from '../accounts/accounts.service';
 import type { YtAccount } from '../accounts/yt-account.entity';
 
@@ -16,7 +19,7 @@ export class YoutubeService {
 
     const auth = this.accounts.oauthClient(account);
     auth.setCredentials({ refresh_token: refreshToken });
-    return google.youtube({ version: 'v3', auth });
+    return youtubeApi({ version: 'v3', auth });
   }
 
   /**

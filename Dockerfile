@@ -39,6 +39,21 @@ RUN pnpm -F @yt-storage/codec build \
  && cp -r packages/codec/src /out/packages/codec/src \
  && cp -r web/out /out/web
 
+# better-sqlite3 ships a prebuilt addon for eight platforms and the amalgamated
+# SQLite source beside them: 27MB, of which this image can load one 2MB file.
+# The rest is deleted here, in the stage that is thrown away, so the runtime
+# never carries a macOS binary it cannot execute.
+#
+# Two layouts live under prebuilds/: better-sqlite3 keeps one file per platform
+# (`linux-arm64.node`), node-gyp-build keeps a directory per platform
+# (`linux-arm64/argon2.node`). Pruning by top-level entry name handles both;
+# deleting by file name deletes the contents of the directory that is kept, and
+# the image then starts up to "No native build was found".
+RUN find /out -type d -name prebuilds -exec sh -c \
+      'find "$1" -mindepth 1 -maxdepth 1 ! -name "linux-*" -exec rm -rf {} +' _ {} \; \
+ && rm -rf /out/api/node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3/deps \
+           /out/api/node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3/src
+
 # ---- runtime -----------------------------------------------------------------
 # Just the deno binary, from the image that exists for exactly this.
 FROM denoland/deno:bin AS deno
@@ -77,10 +92,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # service, not just YouTube — on disk while yt-dlp runs.
 COPY --from=deno /deno /usr/local/bin/deno
 
+# Before the COPYs, so ownership is set as each file lands. A `chown -R` after
+# them rewrites every file it touches, and a rewritten file is a new file in a
+# new layer: the old ordering shipped the application twice, 321MB of it, for
+# nothing but a uid.
+RUN useradd --system --uid 10001 --home /app yts \
+ && mkdir -p /data && chown yts:yts /data
+
 WORKDIR /app
-COPY --from=build /out/api ./api
-COPY --from=build /out/packages ./packages
-COPY --from=build /out/web ./web
+COPY --from=build --chown=yts:yts /out/api ./api
+COPY --from=build --chown=yts:yts /out/packages ./packages
+COPY --from=build --chown=yts:yts /out/web ./web
 
 # The codec runs as a child process straight from TypeScript source, using
 # Node's native type stripping.
@@ -92,8 +114,6 @@ ENV CODEC_CLI=/app/packages/codec/src/cli.ts \
     # deno wants a writable cache; the container user does not own /app.
     DENO_DIR=/tmp/deno
 
-RUN useradd --system --uid 10001 --home /app yts \
- && mkdir -p /data && chown -R yts:yts /data /app
 USER yts
 
 VOLUME ["/data"]
