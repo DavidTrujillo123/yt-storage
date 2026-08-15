@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { filterCookieJar, hasSessionCookie } from '../dist/accounts/cookie-jar.js';
+import {
+  cookieHeaderFromPaste,
+  filterCookieJar,
+  hasSessionCookie,
+  jarFromHeader,
+} from '../dist/accounts/cookie-jar.js';
 
 /** Netscape format: domain, includeSubdomains, path, secure, expiry, name, value. */
 function line(domain: string, name: string, value = 'v', httpOnly = false): string {
@@ -96,5 +101,103 @@ describe('hasSessionCookie', () => {
     assert.equal(hasSessionCookie(Buffer.alloc(0)), false);
     assert.equal(hasSessionCookie(Buffer.from('# Netscape HTTP Cookie File\n')), false);
     assert.equal(hasSessionCookie(Buffer.from(line('.youtube.com', 'PREF'))), false);
+  });
+});
+
+describe('jarFromHeader', () => {
+  // What DevTools shows on the `cookie:` line of any youtube.com request. The
+  // session names are the point; the rest is there to prove they survive.
+  const header =
+    'VISITOR_INFO1_LIVE=abc; __Secure-3PSID=g.a000xyz; SAPISID=sapi/value; ' +
+    'LOGIN_INFO=AFmmF2s; PREF=tz=Europe.Madrid';
+
+  it('produces a jar the filter accepts and the session check passes', () => {
+    const jar = jarFromHeader(header);
+
+    assert.equal(hasSessionCookie(jar), true);
+    const result = filterCookieJar(jar);
+    assert.equal(result.kept, 5);
+    assert.equal(result.dropped, 0);
+    assert.deepEqual(result.domains, ['.youtube.com']);
+  });
+
+  it('keeps values containing = and marks every cookie HttpOnly', () => {
+    // `PREF` carries `tz=Europe.Madrid`, so splitting on every = would truncate
+    // it. Only the first separates name from value.
+    const text = jarFromHeader(header).toString('utf8');
+
+    assert.match(text, /#HttpOnly_\.youtube\.com\tTRUE\t\/\tTRUE\t\d+\tPREF\ttz=Europe\.Madrid/);
+    assert.equal(text.split('\n').filter((l) => l.startsWith('#HttpOnly_')).length, 5);
+  });
+
+  it('honours a different host, since one jar may never mix the two', () => {
+    // .google.com and .youtube.com both define SID with different values, and a
+    // jar carrying both is answered with CookieMismatch.
+    assert.match(jarFromHeader('SID=one', '.google.com').toString('utf8'), /\.google\.com/);
+  });
+
+  it('refuses something that is not a cookie header', () => {
+    assert.throws(() => jarFromHeader('   '), /does not look like a cookie header/);
+    assert.throws(() => jarFromHeader('just some words'), /does not look like a cookie header/);
+  });
+
+  it('leaves a session-less header to be rejected by the filter', () => {
+    // Pasting from a signed-out tab is the likely mistake, and it has to fail
+    // loudly rather than store a jar that authenticates nothing.
+    const jar = jarFromHeader('VISITOR_INFO1_LIVE=abc; PREF=tz=Europe.Madrid');
+    assert.equal(hasSessionCookie(jar), false);
+    assert.throws(() => filterCookieJar(jar), /no Google session cookie/);
+  });
+});
+
+describe('cookieHeaderFromPaste', () => {
+  const cookies = "__Secure-3PSID=g.a000xyz; SAPISID=sapi/value; PREF=tz=Europe.Madrid";
+
+  it('reads the cookies and the URL out of a Chromium "Copy as cURL"', () => {
+    // What Chrome, Brave and Edge put on the clipboard: cookies behind -b, the
+    // URL first, and a pile of headers that are none of our business.
+    const curl =
+      `curl 'https://www.youtube.com/' \\\n  -H 'accept: text/html' \\\n` +
+      `  -b '${cookies}' \\\n  -H 'user-agent: Mozilla/5.0'`;
+
+    const paste = cookieHeaderFromPaste(curl);
+    assert.equal(paste.header, cookies);
+    assert.equal(paste.url, 'https://www.youtube.com/');
+  });
+
+  it('reads them from -H cookie, which is what Firefox and Safari write', () => {
+    const curl = `curl 'https://www.youtube.com/watch?v=abc' -H 'Cookie: ${cookies}'`;
+
+    const paste = cookieHeaderFromPaste(curl);
+    assert.equal(paste.header, cookies);
+    assert.equal(paste.url, 'https://www.youtube.com/watch?v=abc');
+  });
+
+  it("unwraps Chromium's $'…' quoting without truncating the value", () => {
+    // Chromium switches to $'…' when a value needs escaping. Treating it as a
+    // plain quoted string eats the first character and the cookie silently
+    // stops working.
+    const paste = cookieHeaderFromPaste(`curl 'https://www.youtube.com/' -b $'SID=one; HSID=two'`);
+    assert.equal(paste.header, 'SID=one; HSID=two');
+  });
+
+  it('keeps the host of a request that was copied by mistake', () => {
+    // A gstatic row carries no YouTube cookies at all, which is why its cURL
+    // has no -b. The caller names the host rather than saying "not a header".
+    const paste = cookieHeaderFromPaste(
+      `curl 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js' -H 'accept: */*'`,
+    );
+    assert.equal(paste.header, '');
+    assert.equal(paste.url, 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js');
+  });
+
+  it('accepts the header on its own, with or without its name', () => {
+    assert.deepEqual(cookieHeaderFromPaste(`cookie: ${cookies}`), { header: cookies, url: null });
+    assert.deepEqual(cookieHeaderFromPaste(`  ${cookies}  `), { header: cookies, url: null });
+  });
+
+  it('feeds jarFromHeader, which is what the whole paste is for', () => {
+    const { header } = cookieHeaderFromPaste(`curl 'https://www.youtube.com/' -b '${cookies}'`);
+    assert.equal(hasSessionCookie(jarFromHeader(header)), true);
   });
 });
