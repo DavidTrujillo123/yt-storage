@@ -6,6 +6,7 @@ import {
   Get,
   Param,
   Post,
+  Req,
   Query,
   Res,
   UploadedFile,
@@ -13,8 +14,8 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { IsNotEmpty, IsString } from 'class-validator';
-import type { Response } from 'express';
+import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import type { Request, Response } from 'express';
 import { SessionGuard } from '../auth/session.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { User } from '../auth/user.entity';
@@ -24,6 +25,75 @@ class ImportCookiesDto {
   @IsString()
   @IsNotEmpty()
   browser!: string;
+}
+
+/**
+ * The paste, out of whatever shape it arrived in.
+ *
+ * `{ header }` is what the page sends. A bare string is what a curl or a
+ * client sending `text/plain` produces, and accepting it costs one line — the
+ * alternative is a 400 that blames the person for an empty paste that was not
+ * empty.
+ */
+function pasteOf(body: unknown): string | null {
+  if (typeof body === 'string' && body.trim() !== '') return body;
+  if (body && typeof body === 'object') {
+    const value = (body as { header?: unknown }).header;
+    if (typeof value === 'string' && value.trim() !== '') return value;
+  }
+  return null;
+}
+
+/**
+ * The bytes of the request, when the parsed body came back empty.
+ *
+ * A paste is a few kilobytes; the cap is there because this reads an unparsed
+ * stream and something has to say no. Reading it is safe precisely because the
+ * parsed body was empty — nothing else has consumed it.
+ */
+async function rawBody(request: Request, limit = 512 * 1024): Promise<unknown> {
+  if (request.readableEnded) return null;
+
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += (chunk as Buffer).length;
+    if (size > limit) return null;
+    chunks.push(chunk as Buffer);
+  }
+
+  const text = Buffer.concat(chunks).toString('utf8').trim();
+  if (text === '') return null;
+
+  // JSON when it looks like it, the paste itself when it does not.
+  try {
+    return text.startsWith('{') ? JSON.parse(text) : text;
+  } catch {
+    return text;
+  }
+}
+
+/** What arrived instead, in enough detail to act on and with no secret in it. */
+function describe(body: unknown): string {
+  if (body === undefined || body === null) return 'no body at all';
+  if (typeof body === 'string') return body.trim() === '' ? 'an empty string' : 'a string';
+  if (typeof body === 'object') {
+    const keys = Object.keys(body as object);
+    return keys.length ? `an object with keys: ${keys.join(', ')}` : 'an empty object';
+  }
+  return `a ${typeof body}`;
+}
+
+/**
+ * `profile` is an id from the list above, like `brave:Default`. Optional
+ * because without one the capture falls back to opening a throwaway profile and
+ * waiting for a sign-in, which is what the one-off script does.
+ */
+class StartCaptureDto {
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  profile?: string;
 }
 
 class CreateAccountDto {
@@ -119,18 +189,71 @@ export class AccountsController {
   }
 
   /**
-   * Opens a browser here, waits for a sign-in, and stores the jar — the wizard
-   * step as one button.
+   * Stores a jar built from a `cookie:` request header pasted into the page.
+   *
+   * The capture that needs nothing installed: DevTools shows that header on any
+   * youtube.com request, `HttpOnly` cookies included, and one copy carries the
+   * whole session.
+   */
+  @Post(':id/cookies/header')
+  @UseGuards(SessionGuard)
+  async cookieHeader(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Body() body: unknown,
+    @Req() request: Request,
+  ) {
+    // Read by hand rather than through a DTO, and from the raw stream when the
+    // parsed body is empty. Express only parses what its content-type says it
+    // is, so a paste sent as anything but JSON arrives as nothing — and the
+    // person doing the pasting is told their paste was empty when it was not.
+    // Whatever the client called it, the bytes are there.
+    const paste = pasteOf(body) ?? pasteOf(await rawBody(request));
+    if (paste === null) {
+      throw new BadRequestException(
+        `expected {"header": "…"} — got ${describe(body)} with content-type ` +
+          `${request.headers['content-type'] ?? 'none'}. Reload the page and paste again.`,
+      );
+    }
+
+    try {
+      return await this.accounts.storeCookieHeader(user.id, id, paste);
+    } catch (error) {
+      throw new BadRequestException((error as Error).message);
+    }
+  }
+
+  /**
+   * The browser profiles on the API's machine that are already signed in to
+   * Google — what the picker in the page lists.
+   *
+   * Empty is a normal answer, not an error: it means no profile here holds a
+   * Google session, and the page says so rather than offering a button that
+   * would fail.
+   */
+  @Get(':id/cookies/capture/profiles')
+  @UseGuards(SessionGuard)
+  async captureProfiles(@CurrentUser() user: User, @Param('id') id: string) {
+    return { profiles: await this.accounts.captureProfiles(user.id, id) };
+  }
+
+  /**
+   * Takes the jar out of the chosen profile and stores it — the wizard step as
+   * one button.
    *
    * Returns immediately with the first state rather than holding the request
-   * open for the minutes a sign-in takes; `GET` below is how the page follows
-   * along, and `DELETE` gives up.
+   * open while yt-dlp decrypts a profile and Google is asked whose it is; `GET`
+   * below is how the page follows along, and `DELETE` gives up.
    */
   @Post(':id/cookies/capture')
   @UseGuards(SessionGuard)
-  async startCapture(@CurrentUser() user: User, @Param('id') id: string) {
+  async startCapture(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Body() dto: StartCaptureDto,
+  ) {
     try {
-      return await this.accounts.startCookieCapture(user.id, id);
+      return await this.accounts.startCookieCapture(user.id, id, dto?.profile);
     } catch (error) {
       throw new BadRequestException((error as Error).message);
     }

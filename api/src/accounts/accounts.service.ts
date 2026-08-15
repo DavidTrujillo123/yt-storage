@@ -10,9 +10,20 @@ import { join } from 'node:path';
 import { google } from 'googleapis';
 import { SettingsService } from '../common/settings.service';
 import { CookieHealth, YtAccount } from './yt-account.entity';
-import { filterCookieJar, hasSessionCookie } from './cookie-jar';
+import {
+  cookieHeaderFromPaste,
+  filterCookieJar,
+  hasSessionCookie,
+  jarFromHeader,
+} from './cookie-jar';
 import { CookieLock } from './cookie-lock';
-import { BrowserCapture, type CaptureProgress } from './browser-capture';
+import {
+  BrowserCapture,
+  identifySession,
+  listProfiles,
+  type BrowserProfile,
+  type CaptureProgress,
+} from './browser-capture';
 import { quotaIsStale, quotaSummary, selectUploadAccount } from './quota';
 import { OAUTH_SCOPES } from '../youtube/constants';
 
@@ -177,6 +188,51 @@ export class AccountsService {
 
   // --- cookies -------------------------------------------------------------
 
+  /**
+   * Stores a jar built from whatever DevTools was asked to copy, which is the
+   * capture that needs nothing installed anywhere: a **Copy as cURL** of any
+   * request to youtube.com, or the `cookie:` header on its own.
+   *
+   * The session is checked against YouTube before it is stored. A header copied
+   * from a signed-out tab, or from a Google service that is not YouTube, yields
+   * cookies that look right and authenticate nothing — storing that would only
+   * be discovered on the day a file has to come back.
+   */
+  async storeCookieHeader(
+    userId: string,
+    accountId: string,
+    paste: string,
+  ): Promise<{ kept: number; dropped: number; domains: string[]; account: string | null }> {
+    const { header, url } = cookieHeaderFromPaste(paste);
+
+    // Copying the wrong row in DevTools is the likely mistake and looks like
+    // nothing at all: a request to another host carries no YouTube cookies, so
+    // there is no `cookie:` line to find and no cookies in its cURL. Naming the
+    // host is the difference between a dead end and an obvious fix.
+    const host = hostOf(url);
+    if (host && !/(^|\.)youtube\.com$/.test(host)) {
+      throw new Error(
+        `that request went to ${host}, which receives no YouTube cookies. Copy a request to ` +
+          'youtube.com instead — the page itself, or any of the /youtubei/v1/ ones.',
+      );
+    }
+
+    const jar = jarFromHeader(header);
+
+    const session = await identifySession(jar);
+    if (session.checked && !session.loggedIn) {
+      throw new Error(
+        'YouTube does not accept those cookies: either they were copied from a signed-out tab, or ' +
+          'the session has been rotated since — Google does that as the browser keeps using it, ' +
+          'sometimes within minutes. Copy a fresh header, ideally from a private window you then ' +
+          'close without signing out, and paste it straight away.',
+      );
+    }
+
+    const stored = await this.storeCookies(userId, accountId, jar);
+    return { ...stored, account: session.account };
+  }
+
   async storeCookies(
     userId: string,
     accountId: string,
@@ -203,9 +259,25 @@ export class AccountsService {
    * Ownership is checked here, before anything is launched, so the capture that
    * a poll later reports on can only ever belong to the caller.
    */
-  async startCookieCapture(userId: string, accountId: string): Promise<CaptureProgress> {
+  async startCookieCapture(
+    userId: string,
+    accountId: string,
+    profile?: string,
+  ): Promise<CaptureProgress> {
     await this.loadSecret(userId, accountId);
-    return this.capture.start(accountId, (jar) => this.storeCookies(userId, accountId, jar));
+    const store = (jar: Buffer) => this.storeCookies(userId, accountId, jar);
+
+    // A named profile is copied as it is; without one there is nothing signed
+    // in to copy, so a throwaway is opened and the sign-in waited for.
+    return profile
+      ? this.capture.startFromProfile(accountId, profile, store)
+      : this.capture.start(accountId, store);
+  }
+
+  /** The signed-in browser profiles on this machine, for the picker. */
+  async captureProfiles(userId: string, accountId: string): Promise<BrowserProfile[]> {
+    await this.loadSecret(userId, accountId);
+    return listProfiles();
   }
 
   async cookieCaptureStatus(userId: string, accountId: string): Promise<CaptureProgress | null> {
@@ -378,5 +450,15 @@ export class AccountsService {
     dailyLimit: number;
   } {
     return quotaSummary(account);
+  }
+}
+
+/** The host of a URL, or null for anything that is not one. */
+function hostOf(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
   }
 }
