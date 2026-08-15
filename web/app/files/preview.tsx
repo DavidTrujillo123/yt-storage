@@ -203,9 +203,13 @@ export function Preview({ file, onClose }: { file: StoredFile; onClose: () => vo
   return (
     <div className="overlay" onClick={onClose}>
       <div className="sheet" onClick={(event) => event.stopPropagation()}>
+        {/* What this is on the left, what can be done with it on the right.
+            The gap between the two is what makes them two groups rather than
+            one row of five things, and the order never changes between a
+            bundle, an entry and a plain file. */}
         <div className="row" style={{ marginBottom: '0.75rem' }}>
           {entry && (
-            <button onClick={() => setChosen(null)} title="Back to the listing">
+            <button className="quiet" onClick={() => setChosen(null)} title="Back to the listing">
               ←
             </button>
           )}
@@ -213,17 +217,19 @@ export function Preview({ file, onClose }: { file: StoredFile; onClose: () => vo
           <span className="small muted">{formatBytes(shownSize)}</span>
           <span style={{ marginLeft: 'auto' }} />
           <a
-            className="button"
+            className="button primary"
             href={chosen !== null ? entryUrl(file.id, chosen) : `/api/files/${file.id}/download`}
           >
             Download{entry ? ' this file' : ''}
           </a>
-          <button onClick={onClose}>Close</button>
+          <button className="quiet" onClick={onClose}>
+            Close
+          </button>
         </div>
 
         {waiting && (
           <>
-            <p className="small muted">
+            <p className="note">
               Not on disk any more — this is being pulled back off YouTube and decoded. How long
               that takes follows the size of the file, since the video carries about 383 KB of it
               per second. Once it is done the bytes are cached, and everything here is instant.
@@ -233,14 +239,14 @@ export function Preview({ file, onClose }: { file: StoredFile; onClose: () => vo
         )}
 
         {listing && entries && (
-          <p className="small muted">
+          <p className="note">
             {entries.length} file{entries.length === 1 ? '' : 's'} in this bundle, stored as one video.
             Pick one to open it.
           </p>
         )}
 
         {!listing && kind === null && !loading && !error && (
-          <p className="small muted">
+          <p className="note">
             Nothing knows how to render a {shownName.split('.').pop()} file, so here are its bytes.
             {truncated && ` First ${formatBytes(bytesRead)} of ${formatBytes(shownSize)}.`}
           </p>

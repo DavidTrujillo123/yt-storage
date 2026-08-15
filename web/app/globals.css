@@ -81,8 +81,19 @@ h1 {
   margin: 0 0 0.25rem;
 }
 
+/*
+ * A section title, and the only thing at this size on the page.
+ *
+ * Similarity is what makes it read as a title rather than as more text: one
+ * weight, one size, one colour, used for nothing else. Without it a panel is an
+ * unlabelled box and the reader has to infer from the controls what it is for.
+ */
 h2 {
-  font-size: 1rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
   margin: 0 0 0.75rem;
 }
 
@@ -91,12 +102,43 @@ p.lede {
   margin: 0 0 1.5rem;
 }
 
+/*
+ * One panel is one job. The border is the common region that says where a job
+ * starts and stops, so two unrelated things never share a box.
+ */
 section.panel {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1.1rem;
   margin-bottom: 1.25rem;
+}
+
+/*
+ * A second job inside one panel, when the two belong to the same subject.
+ *
+ * Uploading a file and rebuilding the list from the channel both fill this
+ * page, but they are not the same errand — side by side in one row they read as
+ * three equal buttons, and the odd one out is the one that talks to YouTube.
+ * A rule and a gap say "related, not the same": proximity groups each set of
+ * controls with its own explanation, and the line closes the group.
+ */
+.group {
+  border-top: 1px solid var(--border);
+  margin-top: 1.1rem;
+  padding-top: 1rem;
+}
+
+/*
+ * The sentence that explains a group, always directly under its controls and
+ * never beside them. In a flex row it competes with the buttons for the same
+ * horizontal band; below, proximity binds it to what it describes.
+ */
+.note {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 0.55rem 0 0;
+  max-width: 60ch;
 }
 
 label {
@@ -116,6 +158,30 @@ input[type='password'] {
   background: var(--bg);
   color: var(--text);
   font: inherit;
+}
+
+/*
+ * A select left to the browser looks like nothing else on the page, and the eye
+ * groups by appearance before it groups by meaning — a control that resembles
+ * neither the inputs nor the buttons reads as belonging to some other program.
+ */
+select,
+textarea {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+/*
+ * One focus ring everywhere, drawn outside the control so it never nudges the
+ * layout. Keyboard users navigate by this alone.
+ */
+:where(button, .button, input, select, textarea, a):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .field {
@@ -152,14 +218,38 @@ button:disabled {
   cursor: default;
 }
 
-button.primary {
+/*
+ * Three weights, and never more than one primary in a group. Similarity is
+ * doing the work: identical buttons claim identical importance, so a page where
+ * Delete looks like Download is one where both get clicked at the same rate.
+ */
+button.primary,
+.button.primary {
   background: var(--text);
   color: var(--bg);
   border-color: var(--text);
 }
 
+/* Secondary: present, but not competing with the primary beside it. */
+button.quiet,
+.button.quiet {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+button.quiet:hover:not(:disabled),
+.button.quiet:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+
 button.danger {
   color: var(--bad);
+}
+
+button.danger:hover:not(:disabled) {
+  border-color: var(--bad);
 }
 
 table {
@@ -179,19 +269,64 @@ th {
 }
 
 td {
-  padding: 0.55rem 0.5rem;
+  padding: 0.65rem 0.5rem;
   border-top: 1px solid var(--border);
   vertical-align: middle;
 }
 
+/* The row under the pointer is the figure; the rest of the table is ground. */
+tbody tr:hover {
+  background: var(--bg);
+}
+
+/*
+ * Numbers right-aligned and tabular, which puts their digits on one vertical
+ * line. Continuity turns the column into a single shape the eye can compare
+ * down, instead of ragged text that has to be read one cell at a time.
+ */
+th.num,
+td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/*
+ * Every row's controls in one place, hard against the right edge. They line up
+ * into a column of their own — the reader learns once where actions live and
+ * stops scanning for them.
+ */
+td.actions .row {
+  justify-content: flex-end;
+  gap: 0.4rem;
+  flex-wrap: nowrap;
+}
+
+/*
+ * State, as one shape repeated: same pill, same place in every row, with a dot
+ * that carries the tone. The dot matters — colour alone is not a distinction
+ * for a reader who cannot see it, and a shared shape is what lets the eye group
+ * "these four are ready" without reading a single word.
+ */
 .badge {
-  display: inline-block;
-  padding: 0.1rem 0.45rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.1rem 0.5rem;
   border-radius: 999px;
   font-size: 0.75rem;
   border: 1px solid var(--border);
   color: var(--muted);
   white-space: nowrap;
+}
+
+.badge::before {
+  content: '';
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: currentColor;
+  flex: 0 0 auto;
 }
 
 .badge[data-tone='ok'] {
@@ -443,6 +578,12 @@ td {
 
   td .row {
     gap: 0.5rem;
+  }
+
+  /* One column wide, the actions spread rather than crowd the right edge. */
+  td.actions .row {
+    flex-wrap: wrap;
+    justify-content: stretch;
   }
 
   td .row > button,

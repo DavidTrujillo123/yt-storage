@@ -152,6 +152,7 @@ export default function FilesPage() {
       </p>
 
       <section className="panel">
+        <h2>Store a file</h2>
         <div className="row">
           <button
             className="primary"
@@ -173,29 +174,45 @@ export default function FilesPage() {
             onChange={onPick}
             {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
           />
-          <span className="small muted">
-            Several files become one archive, and one upload — which is the resource that runs out.
-          </span>
-          {uploadPercent !== null && (
-            <span className="small muted">
+        </div>
+
+        {/* Under the buttons, not beside them: the sentence explains those two
+            controls, and a reader groups it with whatever it sits closest to. */}
+        <p className="note">
+          Several files become one archive, and one upload — which is the resource that runs out.
+        </p>
+
+        {/* The bar and its label are one object, and both belong under the
+            controls that started the work rather than in the row with them. */}
+        {uploadPercent !== null && (
+          <div style={{ marginTop: '0.6rem' }}>
+            <p className="small muted" style={{ margin: '0 0 0.25rem' }}>
               {uploadPercent < 50
                 ? `Reading the files… ${uploadPercent * 2}%`
                 : uploadPercent < 100
                   ? `Uploading ${(uploadPercent - 50) * 2}%`
                   : 'Handing over to the encoder…'}
-            </span>
-          )}
-        </div>
-        {uploadPercent !== null && (
-          <div className="progress" style={{ maxWidth: 'none' }}>
-            <span style={{ width: `${uploadPercent}%` }} />
+            </p>
+            <div className="progress" style={{ maxWidth: 'none' }}>
+              <span style={{ width: `${uploadPercent}%` }} />
+            </div>
           </div>
         )}
+
         {error && <p className="error">{error}</p>}
-        {status && <RebuildFromChannel accounts={status.accounts} onDone={refresh} />}
+
+        {status && (
+          <div className="group">
+            <h2>Recover the list</h2>
+            <RebuildFromChannel accounts={status.accounts} onDone={refresh} />
+          </div>
+        )}
       </section>
 
       <section className="panel">
+        <h2>
+          Stored{files && files.length > 0 ? ` — ${files.length} file${files.length === 1 ? '' : 's'}` : ''}
+        </h2>
         {files === null ? (
           <p className="empty">Loading…</p>
         ) : files.length === 0 ? (
@@ -208,7 +225,7 @@ export default function FilesPage() {
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Size</th>
+                <th className="num">Size</th>
                 <th>State</th>
                 <th>Video</th>
                 <th />
@@ -222,7 +239,7 @@ export default function FilesPage() {
                     <div className="small muted">{explain(file)}</div>
                     {file.error && <div className="small mono" style={{ color: 'var(--bad)' }}>{file.error}</div>}
                   </td>
-                  <td className="muted" data-label="Size">
+                  <td className="muted num" data-label="Size">
                     {formatBytes(file.size)}
                   </td>
                   <td data-label="State">
@@ -246,7 +263,11 @@ export default function FilesPage() {
                       '—'
                     )}
                   </td>
-                  <td data-label="" data-wide>
+                  {/* Ordered by how often each is wanted, and weighted to
+                      match: one solid button at most per row, the everyday
+                      ones plain, and the destructive one last and quiet so it
+                      is never the thing the hand reaches for by habit. */}
+                  <td className="actions" data-label="" data-wide>
                     <div className="row">
                       {file.status === 'FAILED' && (
                         <button className="primary" onClick={() => retry(file)}>
@@ -256,12 +277,12 @@ export default function FilesPage() {
                       {file.status !== 'PENDING' && file.status !== 'ENCODING' && (
                         <>
                           <button onClick={() => setPreviewing(file)}>Preview</button>
-                          <a className="button small" href={`/api/files/${file.id}/download`}>
+                          <a className="button quiet" href={`/api/files/${file.id}/download`}>
                             Download
                           </a>
                         </>
                       )}
-                      <button className="danger" onClick={() => remove(file)}>
+                      <button className="danger quiet" onClick={() => remove(file)}>
                         Delete
                       </button>
                     </div>

@@ -46,15 +46,17 @@ function CapturePanel({
 
       <CookiePaste accountId={account.id} accountLabel={account.label} onDone={onDone} />
 
+      {/* The second route to the same session, in its own region so the two
+          never read as one long procedure to be followed in order. */}
       {capability?.available && (
-        <>
-          <h3 style={{ marginBottom: '0.35rem' }}>Or let this server take it</h3>
+        <div className="group">
+          <h2>Or let this server take it</h2>
           <CapturePicker
             capture={capture}
             accountLabel={account.label}
             browserName={capability.browserName}
           />
-        </>
+        </div>
       )}
     </section>
   );
@@ -186,12 +188,12 @@ function Accounts() {
 
         <section className="panel">
           <h2>Cookies</h2>
-          <p className="small muted">
+          <p className="note">
             API-uploaded videos are locked private, and a private video can only be fetched by an
             authenticated browser session — OAuth tokens do not work for playback. Hence a cookie jar per
             account.
           </p>
-          <p className="small muted">
+          <p className="note">
             <strong>Capture cookies</strong> below asks for one thing: the <span className="mono">cookie:</span>{' '}
             header your browser already sends to YouTube, which DevTools shows on any request there. It
             needs nothing installed and works wherever this server runs.
@@ -222,6 +224,9 @@ function Accounts() {
       )}
 
       <section className="panel">
+        <h2>
+          Accounts{accounts && accounts.length > 0 ? ` — ${accounts.length}` : ''}
+        </h2>
         {accounts === null ? (
           <p className="empty">Loading…</p>
         ) : accounts.length === 0 ? (
@@ -271,13 +276,26 @@ function Accounts() {
                       </div>
                     </div>
                   </td>
-                  <td data-label="" data-wide>
+                  {/* The two ways to give this account a session sit together,
+                      the one it is missing carrying the weight; Delete stands
+                      apart in tone so it is never a neighbour of them. */}
+                  <td className="actions" data-label="" data-wide>
                     <div className="row">
-                      <a className="button" href={`/api/accounts/${account.id}/connect`}>
+                      <a
+                        className={`button${account.connected ? ' quiet' : ' primary'}`}
+                        href={`/api/accounts/${account.id}/connect`}
+                      >
                         {account.connected ? 'Re-authorise' : 'Connect'}
                       </a>
-                      <button onClick={() => setCapturing(account.id)}>Capture cookies</button>
-                      <button onClick={() => cookieInputs.current[account.id]?.click()}>Upload cookies</button>
+                      <button
+                        className={account.connected && !account.hasCookies ? 'primary' : undefined}
+                        onClick={() => setCapturing(account.id)}
+                      >
+                        Capture cookies
+                      </button>
+                      <button className="quiet" onClick={() => cookieInputs.current[account.id]?.click()}>
+                        Upload cookies
+                      </button>
                       <input
                         ref={(element) => {
                           cookieInputs.current[account.id] = element;
@@ -291,7 +309,7 @@ function Accounts() {
                           event.target.value = '';
                         }}
                       />
-                      <button className="danger" onClick={() => remove(account)}>
+                      <button className="danger quiet" onClick={() => remove(account)}>
                         Delete
                       </button>
                     </div>

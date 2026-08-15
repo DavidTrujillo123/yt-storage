@@ -68,11 +68,15 @@ export function RebuildFromChannel({
         <button onClick={() => void rebuild()} disabled={busy}>
           {busy ? 'Reading the channel…' : 'Rebuild from channel'}
         </button>
-        <span className="small muted">
-          Finds files that are on YouTube but missing here — after a lost database, or a fresh
-          install pointed at the same channel.
-        </span>
       </div>
+
+      {/* Below the control it describes, so the two read as one unit. Beside
+          it, in the same row, it competed with the button for the same line and
+          the group fell apart at the first narrow window. */}
+      <p className="note">
+        Finds files that are on YouTube but missing here — after a lost database, or a fresh
+        install pointed at the same channel.
+      </p>
 
       {error && <p className="error">{error}</p>}
 
