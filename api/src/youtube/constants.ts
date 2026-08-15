@@ -25,8 +25,12 @@ export const REFRESH_TOKEN_KEY = 'youtube.refreshToken';
  * throughout, and `Video Uploads per day` tracked every one of them. The
  * counter that moves is the one that binds.
  *
- * So the budget modelled here is the upload count. The unit budget is left
- * out entirely rather than tracked alongside — this app makes no other Data
- * API call, so there is nothing else that could spend units.
+ * So the budget modelled here is the upload count. The unit budget is left out
+ * entirely rather than tracked alongside: the only other Data API calls this
+ * app makes are the ones that rebuild the catalogue from a channel —
+ * `channels.list` and `playlistItems.list`, 1 unit each — so a full import of a
+ * two-thousand-video channel spends about 41 of the day's 10,000. Next to a
+ * single `videos.insert`, documented at 1,600, that is noise; if a listing
+ * feature ever runs in a loop, this is the comment that stops being true.
  */
 export const DAILY_UPLOAD_LIMIT = 100;

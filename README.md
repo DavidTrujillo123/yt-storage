@@ -387,6 +387,7 @@ redirect URI, which keeps its address.
 | `POST/GET/DELETE /accounts/:id/cookies/capture` | take the jar from `{ profile }`, or drive a throwaway browser here without one: start, poll, cancel |
 | `POST /accounts/:id/cookies/from-browser` | read a local browser profile (see the warning above) |
 | `POST /files` | multipart upload; several parts become one archive |
+| `POST /files/import` | rebuild the catalogue from `{ accountId }`'s channel |
 | `GET /files` | your catalogue with status and progress |
 | `GET /files/:id/entries` | what is inside a bundle |
 | `GET /files/:id/entries/:n/download` | one file out of a bundle |
@@ -429,9 +430,17 @@ made.
   very differently; from a VPS you will hit "Sign in to confirm you're not a
   bot" constantly, which means failed *retrievals*. A machine at home reachable
   over Tailscale gets you remote access without the bot checks.
-- **Back up `api/data/yt-storage.db`.** It maps files to video ids. Losing it is
-  survivable — the filename and hash are written into each video's description
-  and into the container header inside the video itself — but rebuilding is slow.
+- **Back up `data/yt-storage.db`.** It maps files to video ids. Losing it is
+  survivable: **Rebuild from channel** on the Files page reads the channel back
+  and recreates the rows from each video's description, and the first download
+  of each one confirms the size and hash against the container header inside the
+  video. Back it up anyway — a rebuilt row is a claim until something decodes
+  it, and the database is also where your accounts and credentials live.
+- **The database is `./data/yt-storage.db` relative to the working directory.**
+  Started from the repo root it is `data/`, started from `api/` it is
+  `api/data/`, and under Docker it is the `data` volume — three different files,
+  each with its own catalogue. An empty file list on a channel full of videos is
+  usually this, not data loss. Set `DATABASE_PATH` to be sure which one you get.
 - **Multiple Cloud projects to multiply quota is what Google calls quota
   circumvention.** Two or three personal accounts is noise; twenty is a pattern.
 - **This is against YouTube's Terms of Service.** The realistic risk is not

@@ -73,6 +73,27 @@ export class FilesController {
     return this.files.list(user.id);
   }
 
+  /**
+   * Rebuilds the catalogue from a channel — the answer to an empty file list
+   * that is not an empty channel.
+   *
+   * Here rather than under `/accounts` because what it produces is files: the
+   * account is an argument, the same way it is when one is uploaded.
+   *
+   * Synchronous. Listing a channel is two API calls and a few pages, seconds
+   * rather than the minutes a sign-in takes, so there is nothing to poll and
+   * no browser to babysit.
+   */
+  @Post('import')
+  async importFromChannel(@CurrentUser() user: User, @Body('accountId') accountId?: string) {
+    if (!accountId) throw new BadRequestException('which account? expected {"accountId": "…"}');
+    try {
+      return await this.files.importFromChannel(user.id, accountId);
+    } catch (error) {
+      throw new BadRequestException((error as Error).message);
+    }
+  }
+
   @Get(':id')
   get(@CurrentUser() user: User, @Param('id') id: string) {
     return this.files.get(user.id, id);
@@ -132,12 +153,15 @@ export class FilesController {
     // living on YouTube saves a download and a decode, not just a transfer.
     const etag = `"${file.sha256}"`;
 
+    // Read at send time rather than reused from above: an imported row has its
+    // name and hash replaced by the decode that just ran, and the headers must
+    // describe the bytes going out, not the description they were claimed from.
     const send = (path: string, onClose?: () => void) => {
       res.set({
         'Content-Type': inline ? contentTypeOf(file.name) : 'application/octet-stream',
         'Content-Disposition':
           `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(file.name)}"`,
-        ETag: etag,
+        ETag: `"${file.sha256}"`,
         'Cache-Control': 'private, max-age=3600, must-revalidate',
       });
       const stream = createReadStream(path);
@@ -263,7 +287,14 @@ export class FilesController {
       await this.ytdlp.download(file.ytAccountId, file.videoId, videoPath);
       const result = await this.codec.decode(videoPath, dir);
 
-      if (result.sha256 !== file.sha256) {
+      if (file.importedAt) {
+        // A row read back off the channel knows only what the description said.
+        // The container header is the authority — it is what the bytes actually
+        // are — so this is where an imported row stops being a claim. Refusing a
+        // mismatch here would refuse the file for disagreeing with its own
+        // description, which is the one thing that was never verified.
+        await this.files.confirmImported(file, result);
+      } else if (result.sha256 !== file.sha256) {
         throw new BadRequestException(`recovered data does not match the stored hash for ${file.name}`);
       }
 

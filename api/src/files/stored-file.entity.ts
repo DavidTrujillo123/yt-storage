@@ -51,8 +51,14 @@ export class StoredFile {
   @Column()
   name!: string;
 
-  @Column({ type: 'integer' })
-  size!: number;
+  /**
+   * Null only on a row imported back from the channel, where the original size
+   * is not knowable without decoding the video — the description carries the
+   * name and the hash, not the length. A zero would render as an empty file;
+   * null renders as "not measured yet" and is corrected on the first download.
+   */
+  @Column({ type: 'integer', nullable: true })
+  size!: number | null;
 
   @Column()
   sha256!: string;
@@ -105,4 +111,17 @@ export class StoredFile {
 
   @Column({ type: 'datetime', nullable: true })
   verifiedAt!: Date | null;
+
+  /**
+   * Set on a row rebuilt from the channel rather than uploaded through here,
+   * and cleared the first time the file is downloaded.
+   *
+   * Until then `name` and `sha256` are only what the video's description says
+   * they are, and `size` is unknown. That is worth marking: the restore path
+   * refuses a file whose decoded hash disagrees with the stored one, which is
+   * right for a row this instance wrote and wrong for a row it merely read off
+   * YouTube — there the decode is the authority, not the row.
+   */
+  @Column({ type: 'datetime', nullable: true })
+  importedAt!: Date | null;
 }

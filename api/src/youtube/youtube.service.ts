@@ -49,14 +49,7 @@ export class YoutubeService {
       {
         part: ['snippet', 'status'],
         requestBody: {
-          snippet: {
-            title: `yt-storage ${meta.fileId}`,
-            description: [
-              'yt-storage container. Not video content.',
-              `file: ${meta.name}`,
-              `sha256: ${meta.sha256}`,
-            ].join('\n'),
-          },
+          snippet: { title: containerTitle(meta.fileId), description: containerDescription(meta) },
           status: { privacyStatus: 'private', selfDeclaredMadeForKids: false },
         },
         media: { body: createReadStream(videoPath) },
@@ -86,4 +79,133 @@ export class YoutubeService {
   async delete(account: YtAccount, videoId: string): Promise<void> {
     await this.client(account).videos.delete({ id: videoId });
   }
+
+  /**
+   * Every video on the channel, newest first — the read side of what `upload`
+   * writes, and the only way a lost catalogue can be found again.
+   *
+   * Two calls: the channel names its own uploads playlist, and that playlist
+   * lists everything. `search.list` would do it in one, at 100 quota units
+   * against these two's 1 apiece, and it silently omits recent uploads.
+   *
+   * `youtube.readonly` is already granted at sign-in, so nothing here asks
+   * anyone to authorise again.
+   */
+  async listUploads(
+    account: YtAccount,
+    playlistId: string | null,
+    maxPages = MAX_IMPORT_PAGES,
+  ): Promise<{ videos: ChannelVideo[]; playlistId: string; truncated: boolean }> {
+    const youtube = this.client(account);
+    const uploads = playlistId ?? (await this.uploadsPlaylist(youtube, account));
+
+    const videos: ChannelVideo[] = [];
+    let pageToken: string | undefined;
+    let pages = 0;
+
+    do {
+      const { data } = await youtube.playlistItems.list({
+        part: ['snippet'],
+        playlistId: uploads,
+        maxResults: 50,
+        pageToken,
+      });
+
+      for (const item of data.items ?? []) {
+        const videoId = item.snippet?.resourceId?.videoId;
+        if (!videoId) continue;
+        // A playlist keeps its entry after the video behind it is gone, as a
+        // stub titled "Deleted video". Measured on this channel: 7 of 16
+        // entries were those. Reporting them as videos left alone would bury
+        // the ones that matter under rows nobody can act on.
+        if (GONE.has(item.snippet?.title ?? '')) continue;
+        videos.push({
+          videoId,
+          title: item.snippet?.title ?? '',
+          description: item.snippet?.description ?? '',
+          publishedAt: item.snippet?.publishedAt ?? null,
+        });
+      }
+
+      pageToken = data.nextPageToken ?? undefined;
+    } while (pageToken && ++pages < maxPages);
+
+    // A channel longer than the walk is a real answer, not a failure: the rest
+    // is one more import away, and saying so beats pretending the list is whole.
+    return { videos, playlistId: uploads, truncated: Boolean(pageToken) };
+  }
+
+  private async uploadsPlaylist(youtube: youtube_v3.Youtube, account: YtAccount): Promise<string> {
+    const { data } = await youtube.channels.list({ part: ['contentDetails'], mine: true });
+    const uploads = data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+    if (!uploads) {
+      throw new Error(
+        `${account.label} authorised no channel, so there is nothing to list - ` +
+          'connect it to the Google account that owns the channel',
+      );
+    }
+    return uploads;
+  }
+}
+
+/** How far an import walks before it stops and says so: 50 videos a page. */
+export const MAX_IMPORT_PAGES = 40;
+
+/**
+ * The titles YouTube substitutes for a video the caller cannot see. They come
+ * back in English whatever the caller's locale, and there is no field that says
+ * "this entry is a stub" — the title is the only tell.
+ */
+const GONE = new Set(['Deleted video', 'Private video']);
+
+export interface ChannelVideo {
+  videoId: string;
+  title: string;
+  description: string;
+  publishedAt: string | null;
+}
+
+export function containerTitle(fileId: string): string {
+  return `yt-storage ${fileId}`;
+}
+
+/**
+ * What the catalogue is rebuilt from, so it is written in one place and read in
+ * one place, both of them here.
+ */
+export function containerDescription(meta: { name: string; sha256: string }): string {
+  return [
+    'yt-storage container. Not video content.',
+    `file: ${meta.name}`,
+    `sha256: ${meta.sha256}`,
+  ].join('\n');
+}
+
+/** What a container video's description says about the file inside it. */
+export interface ContainerVideo {
+  fileId: string;
+  name: string;
+  sha256: string;
+}
+
+/**
+ * The file behind a video, or null when that video is not one of ours.
+ *
+ * The inverse of what `upload` writes, and deliberately in the same file: the
+ * two shapes have to move together, and a parser living anywhere else would be
+ * free to drift until the day someone needs it and finds it broken.
+ *
+ * Strict on purpose. A video whose title or description does not match exactly
+ * is reported as unrecognised rather than guessed at — a wrong hash stored as
+ * if it were right turns into a download that refuses its own bytes.
+ */
+export function parseContainerVideo(video: ChannelVideo): ContainerVideo | null {
+  const title = video.title.match(/^yt-storage\s+([0-9a-f-]{36})$/i);
+  if (!title) return null;
+
+  const name = video.description.match(/^file:\s*(.+)$/m);
+  const sha256 = video.description.match(/^sha256:\s*([0-9a-f]{64})\s*$/im);
+  if (!name || !sha256) return null;
+
+  return { fileId: title[1], name: name[1].trim(), sha256: sha256[1].toLowerCase() };
 }

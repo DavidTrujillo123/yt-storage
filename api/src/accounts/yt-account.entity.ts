@@ -67,6 +67,14 @@ export class YtAccount {
   @Column({ type: 'datetime', default: () => 'CURRENT_TIMESTAMP' })
   quotaResetAt!: Date;
 
+  /**
+   * The channel's uploads playlist, learned the first time the catalogue is
+   * rebuilt from it. A channel's is fixed for its lifetime, so remembering it
+   * saves a `channels.list` on every later import.
+   */
+  @Column({ type: 'text', nullable: true })
+  uploadsPlaylistId!: string | null;
+
   @CreateDateColumn()
   createdAt!: Date;
 

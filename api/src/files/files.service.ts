@@ -7,12 +7,24 @@ import { Queue } from 'bullmq';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, rm, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { FileStatus, StoredFile } from './stored-file.entity';
 import { RestoreCache } from './restore-cache';
 import { bundleName, toEntries, type UploadedPart } from './bundle';
 import { writeTar } from './tar';
 import { ENCODE_QUEUE, FileJob, UPLOAD_QUEUE, VERIFY_QUEUE, verifyJobOptions } from '../jobs/queues';
+import { AccountsService } from '../accounts/accounts.service';
+import { parseContainerVideo, YoutubeService } from '../youtube/youtube.service';
+
+/** What a rebuild found: rows created, rows already here, and what it left alone. */
+export interface ImportResult {
+  imported: number;
+  alreadyKnown: number;
+  /** Videos on the channel that are not containers; never adopted, only named. */
+  unrecognised: { videoId: string; title: string }[];
+  /** True when the channel is longer than one import walks; run it again. */
+  truncated: boolean;
+}
 
 @Injectable()
 export class FilesService {
@@ -26,6 +38,8 @@ export class FilesService {
     @InjectQueue(UPLOAD_QUEUE) private readonly uploadQueue: Queue<FileJob>,
     @InjectQueue(VERIFY_QUEUE) private readonly verifyQueue: Queue<FileJob>,
     private readonly cache: RestoreCache,
+    private readonly accounts: AccountsService,
+    private readonly youtube: YoutubeService,
   ) {
     this.dataDir = config.get<string>('DATA_DIR', './data');
   }
@@ -79,6 +93,126 @@ export class FilesService {
 
     this.log.log(`bundled ${entries.length} files into ${name}`);
     return this.ingest(userId, tarPath, name);
+  }
+
+  /**
+   * Rebuilds the catalogue from the channel: every container video that has no
+   * row here gets one.
+   *
+   * The point of the exercise is that the videos outlive this database. Each
+   * upload writes the filename and the hash into its description precisely so
+   * that a lost, replaced or simply *different* SQLite file is a recoverable
+   * state rather than a channel of unidentifiable videos — which is what this
+   * reads back.
+   *
+   * Nothing is downloaded. The description is enough to name a row and enough
+   * to find it again; the original size and the real hash only exist inside the
+   * video, and the first download decodes it anyway. So the row lands marked
+   * `importedAt` and the restore path settles it — see `bytesOf`.
+   *
+   * Videos that are not ours are reported, never adopted. Guessing at a video
+   * whose description does not match would store a hash that the decode later
+   * refuses, turning someone else's holiday clip into a permanently broken row.
+   */
+  async importFromChannel(userId: string, accountId: string): Promise<ImportResult> {
+    const account = await this.accounts.loadSecret(userId, accountId);
+    const { videos, playlistId, truncated } = await this.youtube.listUploads(
+      account,
+      account.uploadsPlaylistId,
+    );
+
+    if (playlistId !== account.uploadsPlaylistId) {
+      await this.accounts.rememberUploadsPlaylist(account.id, playlistId);
+    }
+
+    // One query rather than one per video: a channel is thousands of rows at
+    // most and the catalogue is already loaded whole by every listing.
+    const known = new Set(
+      (await this.files.find({ where: { userId }, select: { videoId: true } }))
+        .map((file) => file.videoId)
+        .filter((videoId): videoId is string => videoId !== null),
+    );
+
+    const unrecognised: { videoId: string; title: string }[] = [];
+    const rows: StoredFile[] = [];
+
+    for (const video of videos) {
+      const container = parseContainerVideo(video);
+      if (!container) {
+        unrecognised.push({ videoId: video.videoId, title: video.title });
+        continue;
+      }
+      if (known.has(video.videoId)) continue;
+
+      rows.push(
+        this.files.create({
+          userId,
+          ytAccountId: account.id,
+          videoId: video.videoId,
+          name: container.name,
+          sha256: container.sha256,
+          // Unknown until something decodes the video; null says so honestly.
+          size: null,
+          status: 'READY',
+          importedAt: new Date(),
+          // The bytes are on YouTube and nowhere else, which is exactly the
+          // state a verified file ends in.
+          verifiedAt: video.publishedAt ? new Date(video.publishedAt) : new Date(),
+        }),
+      );
+    }
+
+    if (rows.length) await this.files.save(rows);
+    this.log.log(
+      `imported ${rows.length} files from ${account.label}` +
+        ` (${videos.length} videos on the channel, ${unrecognised.length} not ours)`,
+    );
+
+    return {
+      imported: rows.length,
+      alreadyKnown: videos.length - rows.length - unrecognised.length,
+      unrecognised,
+      truncated,
+    };
+  }
+
+  /**
+   * Replaces an imported row's claims with what the video actually contained.
+   *
+   * The description could always have been edited, truncated by YouTube, or
+   * simply written by an older version of this app. The container header could
+   * not: it travels inside the pixels with the data it describes. So the first
+   * decode is the moment the row stops being a reading of a description and
+   * becomes a measurement — and `importedAt` clearing is what says so.
+   *
+   * `decoded.name` is the path the codec wrote, not a filename.
+   */
+  async confirmImported(
+    file: StoredFile,
+    decoded: { name: string; bytes: number; sha256: string },
+  ): Promise<void> {
+    const name = basename(decoded.name);
+    const changed = name !== file.name || decoded.sha256 !== file.sha256;
+
+    file.name = name;
+    file.size = decoded.bytes;
+    file.sha256 = decoded.sha256;
+    file.importedAt = null;
+    file.verifiedAt = file.verifiedAt ?? new Date();
+
+    await this.files.update(file.id, {
+      name,
+      size: decoded.bytes,
+      sha256: decoded.sha256,
+      importedAt: null,
+      verifiedAt: file.verifiedAt,
+    });
+
+    this.log.log(
+      changed
+        ? `confirmed imported ${file.id}: it is ${name} (${decoded.bytes} bytes), not what its description said`
+        : `confirmed imported ${file.id}: ${name}, ${decoded.bytes} bytes`,
+    );
   }
 
   hash(path: string): Promise<string> {

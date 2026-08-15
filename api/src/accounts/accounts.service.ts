@@ -182,6 +182,11 @@ export class AccountsService {
     this.log.log(`account ${account.label} connected`);
   }
 
+  /** A channel's uploads playlist never changes, so it is learned once. */
+  async rememberUploadsPlaylist(accountId: string, playlistId: string): Promise<void> {
+    await this.accounts.update(accountId, { uploadsPlaylistId: playlistId });
+  }
+
   refreshTokenOf(account: YtAccount): string | null {
     return account.refreshToken ? this.settings.openText(account.refreshToken) : null;
   }

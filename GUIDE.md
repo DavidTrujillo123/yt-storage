@@ -142,13 +142,18 @@ Upload a file (or a folder — several files become one archive automatically) a
 | `POST /files` | upload — one or several files |
 | `GET /files` | your files, with status and progress |
 | `GET /files/:id/download` | fetch a file back |
+| `POST /files/import` | rebuild the list from a channel |
 | `GET /status` | account health and today's remaining upload budget |
+
+**If the file list is empty and it should not be**, press **Rebuild from channel** on the Files page. Every upload writes its filename and hash into the video's description, so the list can be read back off the channel: the videos are found, the rows are recreated, and the exact size and hash of each one are confirmed the first time you download it. Videos that are not yt-storage containers are listed and left alone.
+
+The usual reason for that empty list is not lost data at all. The database is `./data/yt-storage.db` *relative to where the app was started* — from the repo root that is `data/`, from `api/` it is `api/data/`, and under Docker it is a volume inside the container. Three different files, three different lists, same channel. Set `DATABASE_PATH` if you want to be certain which one you are opening.
 
 ### 7. Worth knowing before you rely on it
 
 - **One account gets 100 uploads a day** (~1.5 TiB) — YouTube's limit, not a setting you can raise. It clears at midnight US Pacific, not at your midnight.
 - **Use a home internet connection, not a server/VPS,** to retrieve files — YouTube blocks datacenter IPs with bot checks.
-- **Back up `api/data/yt-storage.db`** — losing it is recoverable but slow, since the filename and hash are also embedded in each video itself.
+- **Back up `data/yt-storage.db`** — losing it is recoverable with **Rebuild from channel**, since the filename and hash are embedded in each video and in its description, but that file also holds your accounts and credentials, which nothing can rebuild.
 - **This runs against YouTube's Terms of Service.** A couple of personal accounts is unremarkable; running many Cloud projects to multiply quota is the pattern Google's abuse detection looks for. Keep a real backup of anything irreplaceable.
 
 ---
@@ -291,11 +296,16 @@ Sube un archivo (o una carpeta — varios archivos se convierten automáticament
 | `POST /files` | subir — uno o varios archivos |
 | `GET /files` | tus archivos, con estado y progreso |
 | `GET /files/:id/download` | traer de vuelta un archivo |
+| `POST /files/import` | reconstruir la lista desde un canal |
 | `GET /status` | estado de las cuentas y presupuesto de subida restante hoy |
+
+**Si la lista de archivos sale vacía y no debería**, pulsa **Rebuild from channel** en la página de Files. Cada subida escribe el nombre del archivo y su hash en la descripción del video, así que la lista se puede leer de vuelta desde el canal: se encuentran los videos, se recrean las filas, y el tamaño y el hash exactos se confirman la primera vez que descargas cada uno. Los videos que no son contenedores de yt-storage se listan y se dejan en paz.
+
+La causa habitual de esa lista vacía no es pérdida de datos. La base de datos es `./data/yt-storage.db` *relativa al directorio desde donde arrancaste la app* — desde la raíz del repo es `data/`, desde `api/` es `api/data/`, y en Docker es un volumen dentro del contenedor. Tres archivos distintos, tres listas distintas, el mismo canal. Fija `DATABASE_PATH` si quieres estar seguro de cuál abres.
 
 ### 7. Vale la pena saber esto antes de confiar en ello
 
 - **Una cuenta permite unas seis subidas al día** (~90 GiB) — es la cuota de YouTube, no un ajuste que puedas subir.
 - **Usa una conexión de internet doméstica, no un servidor/VPS,** para descargar archivos — YouTube bloquea IPs de centros de datos con verificaciones anti-bot.
-- **Respalda `api/data/yt-storage.db`** — perderlo es recuperable pero lento, ya que el nombre de archivo y el hash también quedan grabados dentro de cada video.
+- **Respalda `data/yt-storage.db`** — perderlo es recuperable con **Rebuild from channel**, ya que el nombre y el hash quedan grabados dentro de cada video y en su descripción, pero ese archivo también guarda tus cuentas y credenciales, y eso no lo reconstruye nada.
 - **Esto va en contra de los Términos de Servicio de YouTube.** Un par de cuentas personales pasa desapercibido; usar muchos proyectos de Cloud para multiplicar la cuota es el patrón que busca la detección de abuso de Google. Mantén un respaldo real de todo lo irremplazable.

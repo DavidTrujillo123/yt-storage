@@ -130,7 +130,9 @@ export function Preview({ file, onClose }: { file: StoredFile; onClose: () => vo
   const entry = chosen !== null && entries ? entries[chosen] : null;
   const shownSize = entry ? entry.size : file.size;
   const shownName = entry ? entry.name : file.name;
-  const truncated = bytesRead > 0 && bytesRead < shownSize;
+  // An imported row has no size until its first download, and a preview cannot
+  // claim it was cut short against a length nobody has measured.
+  const truncated = bytesRead > 0 && shownSize !== null && bytesRead < shownSize;
   const listing = isBundle && chosen === null;
 
   return (

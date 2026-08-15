@@ -41,7 +41,8 @@ export type FileStatus =
 export interface StoredFile {
   id: string;
   name: string;
-  size: number;
+  /** Null on a row rebuilt from the channel: the size lives inside the video. */
+  size: number | null;
   sha256: string;
   status: FileStatus;
   error: string | null;
@@ -53,6 +54,27 @@ export interface StoredFile {
   lastCheckedAt: string | null;
   createdAt: string;
   verifiedAt: string | null;
+  /**
+   * Set while a row is only as good as the description it was read from, and
+   * cleared by the first download — which decodes the video and learns what the
+   * file really is.
+   */
+  importedAt: string | null;
+}
+
+/**
+ * What a rebuild found on the channel.
+ *
+ * `unrecognised` is the honest half: videos that are not yt-storage containers
+ * are named and left alone, because inventing a row for one would store a hash
+ * that no download could ever match.
+ */
+export interface ImportResult {
+  imported: number;
+  alreadyKnown: number;
+  unrecognised: { videoId: string; title: string }[];
+  /** The channel is longer than one walk; running it again picks up the rest. */
+  truncated: boolean;
 }
 
 export interface Account {
@@ -323,7 +345,10 @@ export function inlineUrl(id: string): string {
   return `/api/files/${id}/download?inline=1`;
 }
 
-export function formatBytes(bytes: number): string {
+/** Null is a real answer for an imported row: nothing has measured it yet. */
+export function formatBytes(bytes: number | null): string {
+  if (bytes === null) return '—';
+
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
   let value = bytes;
   let unit = 0;

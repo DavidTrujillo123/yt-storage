@@ -180,6 +180,41 @@ Three rules learned the hard way, all of them enforced in code:
   no account switch and `X-Goog-AuthUser` was measured to change nothing. One
   browser profile per account is the answer.
 
+### The catalogue can be rebuilt from the channel
+
+`POST /files/import` (`FilesService.importFromChannel`) walks a channel's uploads
+playlist and creates a row for every container video that has none. It exists
+because the rows and the data live in different places: the videos are on
+YouTube, the catalogue is one SQLite file, and that file is easy to lose — or to
+never have opened in the first place. `DATABASE_PATH` defaults to
+`./data/yt-storage.db` *relative to the working directory*, so the repo root,
+`api/` and the Docker volume are three separate catalogues of the same channel.
+An empty file list is far more often that than data loss.
+
+What makes it work is that a video is self-describing twice over. `upload()`
+writes the title `yt-storage <fileId>` and a description carrying `file:` and
+`sha256:` — `containerTitle`/`containerDescription`, with `parseContainerVideo`
+reading them back in the same file so the two cannot drift; `api/test/import.test.mts`
+pins that. And underneath, the container header inside the frames carries the
+name, the length and the hash (`packages/codec/src/container.ts`), which is why
+`decodeVideo` needs no metadata at all.
+
+Two rules the design turns on:
+
+- **Import trusts the description, the decode is the authority.** An imported row
+  lands with `importedAt` set, `size: null`, and a name and hash that are only
+  claims. The first download decodes the video and `confirmImported()` replaces
+  them with the measured values. Until then the restore path must *not* refuse a
+  hash mismatch on such a row — it would be refusing the file for disagreeing
+  with the one thing nobody verified.
+- **A video that does not match is reported, never adopted.** Inventing a row for
+  someone's unrelated upload stores a hash no download can match, which presents
+  as corruption rather than as a video that was never ours.
+
+`size` is nullable for this, deliberately: a `0` renders as an empty file, and
+`null` renders as "not measured yet". `synchronize: true` applies that on boot —
+back the database up before first running a build that changes a column.
+
 ---
 
 ## 4. What is done

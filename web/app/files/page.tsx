@@ -5,6 +5,7 @@ import { api, ApiError, formatBytes, formatWhen, uploadFiles } from '@/lib/api';
 import type { FileStatus, Status, StoredFile } from '@/lib/api';
 import { useSession } from '@/lib/use-session';
 import { Preview } from './preview';
+import { RebuildFromChannel } from './rebuild';
 
 const TONE: Record<FileStatus, 'ok' | 'busy' | 'bad'> = {
   PENDING: 'busy',
@@ -42,7 +43,9 @@ function explain(file: StoredFile): string {
     case 'VERIFYING':
       return 'reading it back and checking the hash';
     case 'READY':
-      return 'stored on YouTube, local copy released';
+      return file.importedAt
+        ? 'found on the channel — size and hash confirmed on first download'
+        : 'stored on YouTube, local copy released';
     case 'FAILED':
       return 'failed';
   }
@@ -189,13 +192,17 @@ export default function FilesPage() {
           </div>
         )}
         {error && <p className="error">{error}</p>}
+        {status && <RebuildFromChannel accounts={status.accounts} onDone={refresh} />}
       </section>
 
       <section className="panel">
         {files === null ? (
           <p className="empty">Loading…</p>
         ) : files.length === 0 ? (
-          <p className="empty">Nothing stored yet. Pick a file above.</p>
+          <p className="empty">
+            Nothing stored yet. Pick a file above — or, if this list should not be empty,
+            rebuild it from the channel.
+          </p>
         ) : (
           <table>
             <thead>
