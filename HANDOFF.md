@@ -50,7 +50,8 @@ packages/codec/     ESM TypeScript. Encoder, decoder, Reed-Solomon, ffmpeg pipes
                     Has its own README with the physical-layer design.
 api/                NestJS. Two entry points: src/main.ts (HTTP), src/worker.ts (jobs).
 web/                Next.js UI, exported static. The API process serves it.
-scripts/            get-cookies.mjs — browser cookie capture, runs on the desktop.
+scripts/            browser cookie capture for a desktop: lib/capture.mjs is the
+                    capture itself, get-cookies.mjs runs it once from a terminal.
 Dockerfile          Multi-stage; compiles native addons, ships ffmpeg + yt-dlp.
 docker-compose.yml  redis + api + worker.
 ```
@@ -158,12 +159,26 @@ Three rules learned the hard way, all of them enforced in code:
   them back. Two concurrent rotations of one jar invalidate the Google session
   outright. `CookieLock` (Redis) makes this exclusive across the api and worker
   processes.
-- **Never copy from a live browser profile.** A jar taken from a profile that
-  stays signed in is rotated by two clients at once and dies within minutes —
-  observed twice, at roughly twenty and five minutes. `scripts/get-cookies.mjs`
-  launches the browser against a **throwaway profile** which is deleted after
-  extraction, so nothing ever rotates that session again. A private/incognito
-  window cannot be read at all: its cookies never touch disk.
+- **A jar copied from a live profile is rotated by two clients at once** and can
+  die within minutes — observed twice, at roughly twenty and five. That is the
+  known cost of the in-app picker, chosen deliberately by the owner: it lists the
+  browser profiles already signed in to YouTube and copies one, so nobody signs
+  in again. `scripts/get-cookies.mjs` remains the durable path — a **throwaway
+  profile** deleted after extraction, which nothing ever rotates again. A
+  private/incognito window cannot be read at all: its cookies never touch disk.
+- **A Google session is not a YouTube session.** A profile signed in to Search or
+  Cloud Console carries `__Secure-3PSID` and friends while YouTube stays signed
+  out, and that jar authenticates nothing here. `LOGIN_INFO` in the cookie
+  database is the local tell; `identifySession()` confirms it by fetching
+  `youtube.com/account` and looking for `"LOGGED_IN":true`.
+- **Build the cookie header per host, never from the whole jar.** `SID` exists
+  for `.google.com` and for `.youtube.com` with different values, and a header
+  carrying both gets `accounts.google.com/CookieMismatch` — every auth check
+  built on it then reads as "signed out". An hour went into that.
+- **One jar cannot be pointed at a secondary Google account.** A profile may hold
+  several (`?authuser=N` enumerates them, and the app lists them), but yt-dlp has
+  no account switch and `X-Goog-AuthUser` was measured to change nothing. One
+  browser profile per account is the answer.
 
 ---
 
@@ -337,10 +352,22 @@ a working account — see 5.1.
 - **yt-dlp ages badly.** YouTube breaks it every few weeks. The container pins
   whatever pip installed at build time; there is no update path yet. Needs either
   periodic rebuilds or a self-update step.
-- **`scripts/get-cookies.mjs` needs a GUI**, so it runs on the desktop and talks
-  to the API over HTTP. That is deliberate and correct — do not try to move it
-  into the container. `YTS_API` is the **origin**, not the API root: the script
-  adds the `/api` prefix itself. It did not, for a while, and every call 404'd.
+- **The capture is a paste, and that is the end of a long argument.** A jar has
+  to come from a real browser signed in to YouTube. A container can neither exec
+  on the host nor read a browser profile it cannot see, so the choices were: ship
+  a browser in the image (chromium + Xvfb + x11vnc + noVNC, ~600MB, tried and
+  removed), run something on the operator's machine (a helper process or an
+  extension, ruled out), or ask the operator for the `cookie:` header DevTools
+  already shows. The paste needs nothing on either side, so it won.
+  `jarFromHeader` in `cookie-jar.ts` turns it into a Netscape jar and the
+  existing `filterCookieJar` does the rest. `scripts/get-cookies.mjs` stays for
+  anyone who wants a throwaway-profile jar instead; `YTS_API` there is the
+  **origin**, not the API root — it adds the `/api` prefix itself. It did not,
+  for a while, and every call 404'd.
+- **`document.cookie` cannot see the cookies that matter.** They are `HttpOnly`,
+  so no page, bookmarklet or console can read them — only DevTools, an
+  extension, or a process with the profile on disk. Any future "just read them
+  from the page" idea dies here.
 - **Docker on a Mac** cannot use VideoToolbox, but the encoder is libx264
   (software) anyway. Only matters if hardware encoding is ever added.
 

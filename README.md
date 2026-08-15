@@ -246,24 +246,51 @@ API so you can leave and return. What it does, spelled out:
    - close the private window **without logging out** — logging out kills the
      session server-side and the exported jar dies with it
 
-   Or press the button. **Capture cookies** on `/accounts`, and step 4 of
-   `/setup`, do the whole thing: a brand new throwaway profile, a sign-in, the
-   jar stored, the profile deleted. Two ways, picked by what the server has:
+   Or paste it. Step 4 of `/setup` and **Capture cookies** on `/accounts` ask for
+   one thing: the `cookie:` header your browser already sends to YouTube.
 
-   - **In the container.** The image ships chromium, Xvfb, x11vnc and noVNC.
-     The browser runs on a virtual display and appears in the page, with your
-     keyboard and mouse going to it. x11vnc listens on loopback only and is
-     reachable exclusively through `/api/vnc`, which upgrades to a WebSocket
-     only for a signed-in session — unauthenticated upgrades get a 401 before
-     the RFB handshake starts. It is a real browser receiving real X input
-     rather than one driven by automation, which is what Google's sign-in
-     requires; a headless automated browser is refused with "this browser or
-     app may not be secure". This is why the runtime image is about 2GB.
-   - **Natively.** No virtual display needed: it opens Brave, Chrome, Chromium,
-     Edge or Vivaldi on that machine, preferring whichever handles https.
+   1. Open `youtube.com` in the browser signed in as **the same account you
+      authorised in step 3** — jar and OAuth token have to be one account, or the
+      app uploads as one channel and cannot read back what it stored
+   2. F12 → **Network** → reload
+   3. Filter by **Doc** and click a row: `you`, `persist_identity` or the page
+      itself
+   4. Under **Request Headers**, copy the whole value of `cookie:`, paste it in
+      and save
 
-   `/status` reports which under `cookieCapture.mode`, or `available: false`
-   with a `reason` when the server can do neither.
+   The page carries a screenshot of that panel, because the words alone sent the
+   first attempt to a `gstatic.com` row — another domain, so the browser sends it
+   no YouTube cookies and there is no `cookie:` line on it at all, which reads as
+   broken instructions rather than as the wrong row. A **Copy → Copy as cURL** of
+   the right row is accepted too, and its URL is what lets the server answer
+   *"that request went to www.gstatic.com, which receives no YouTube cookies"*.
+
+   Saving reports which account the jar turned out to hold, so a jar for the
+   wrong Google account is caught there rather than on the first download.
+
+   Nothing is installed on either side — no browser in the image, no process on
+   your machine, no Python. The console is no use for this (`document.cookie`
+   cannot see `HttpOnly` cookies, and those are the ones that authenticate) but
+   DevTools shows them, and a header from `youtube.com` alone is enough: measured
+   against `youtube.com/account`, which answered `"LOGGED_IN":true` for exactly
+   that subset. The server checks that before storing, so a header copied from a
+   signed-out tab fails there rather than on the day a file has to come back, and
+   it names the account the jar turned out to be.
+
+   A jar built this way copies the session your browser keeps using, so Google
+   can rotate it away — an account you do not browse with is what avoids that.
+
+   **When the API runs natively** it can also read the browser profiles on its
+   own machine: the same panel lists the ones already signed in to YouTube and
+   copies whichever you pick, with no paste at all. `/status` says
+   `cookieCapture.available` for that, and `false` with a `reason` under Docker,
+   where the paste is the way.
+
+   One thing neither path can do is pick a **secondary Google account**. A
+   profile signed in to several is listed with all of them, but yt-dlp has no
+   account switch and `X-Goog-AuthUser` was measured here to change nothing, so a
+   jar authenticates as that profile's effective account and no other. Give an
+   account its own browser profile to use it.
 
    The same capture also runs from your own machine, which is what to use when
    the API is somewhere without either:
@@ -355,8 +382,9 @@ redirect URI, which keeps its address.
 | `GET/POST /accounts`, `DELETE /accounts/:id` | YouTube accounts |
 | `GET /accounts/:id/connect?return=setup` | start OAuth for that account |
 | `POST /accounts/:id/cookies` | store its cookie jar |
-| `POST/GET/DELETE /accounts/:id/cookies/capture` | drive a throwaway browser profile here: start, poll, cancel |
-| `GET /api/vnc` (WebSocket) | the container's browser, for a signed-in viewer only |
+| `POST /accounts/:id/cookies/header` | turn a pasted `cookie:` header into the jar, after checking it against YouTube |
+| `GET /accounts/:id/cookies/capture/profiles` | browser profiles on the API's machine that are signed in to Google (native only) |
+| `POST/GET/DELETE /accounts/:id/cookies/capture` | take the jar from `{ profile }`, or drive a throwaway browser here without one: start, poll, cancel |
 | `POST /accounts/:id/cookies/from-browser` | read a local browser profile (see the warning above) |
 | `POST /files` | multipart upload; several parts become one archive |
 | `GET /files` | your catalogue with status and progress |
