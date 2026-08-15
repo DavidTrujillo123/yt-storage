@@ -14,10 +14,20 @@ export class ApiError extends Error {
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    ...init,
-    headers: init?.body instanceof FormData ? init.headers : { 'Content-Type': 'application/json', ...init?.headers },
-  });
+  // Built through Headers rather than by spreading objects: header names fold
+  // case-insensitively there, so a caller that sets its own `content-type`
+  // replaces the default instead of adding a second spelling of it. Two keys in
+  // a plain object reach the server as `application/json, application/json`,
+  // which no body parser recognises — the request arrives with an empty body
+  // and the endpoint answers that a field it was sent is missing.
+  const headers = new Headers(init?.headers);
+  // FormData carries its own multipart type, complete with the boundary only
+  // the browser knows; naming it here would break the upload.
+  if (!(init?.body instanceof FormData) && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+
+  const response = await fetch(`/api${path}`, { ...init, headers });
 
   if (!response.ok) {
     // Nest puts the useful sentence in `message`; it is often a list.
@@ -173,6 +183,19 @@ export interface Status {
   /** What the server will send Google as the callback address. */
   redirectUri: string;
   cookieCapture: CookieCapture;
+}
+
+/**
+ * What a restore is doing right now. A file whose bytes are only on YouTube
+ * costs a whole video download and a decode before anything can be shown, and
+ * that is minutes for a large one — this is what the page shows instead of a
+ * spinner that cannot tell work from a hang.
+ */
+export interface RestoreState {
+  phase: 'idle' | 'downloading' | 'decoding';
+  /** 0-100, or null while the size is still unknown. */
+  percent: number | null;
+  startedAt: string | null;
 }
 
 export interface TarEntry {

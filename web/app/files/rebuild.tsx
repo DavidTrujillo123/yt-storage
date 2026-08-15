@@ -42,7 +42,6 @@ export function RebuildFromChannel({
     try {
       const found = await api<ImportResult>('/files/import', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ accountId: accountId || connected[0].id }),
       });
       setResult(found);

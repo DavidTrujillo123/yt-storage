@@ -36,7 +36,6 @@ export function useCookieCapture(accountId: string, onDone: () => Promise<void> 
         setProgress(
           await api<CaptureProgress>(`/accounts/${accountId}/cookies/capture`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ profile }),
           }),
         );
