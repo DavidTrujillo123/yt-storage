@@ -30,6 +30,19 @@ export class YtdlpError extends Error {
 }
 
 /**
+ * The jar is no longer a session. Its own class because callers answer it
+ * differently from every other yt-dlp failure: nothing about the file or the
+ * request is wrong, so it is a 4xx pointing at the Accounts page rather than a
+ * 500, and a retry cannot help until somebody captures cookies again.
+ */
+export class CookiesExpiredError extends YtdlpError {
+  constructor(message: string, stderr: string, argv: string[]) {
+    super(message, stderr, argv);
+    this.name = 'CookiesExpiredError';
+  }
+}
+
+/**
  * yt-dlp wrapper.
  *
  * Every call pins a minimum height. The codec's decoder needs roughly 3.3
@@ -44,7 +57,11 @@ export class YtdlpService {
 
   constructor(private readonly accounts: AccountsService) {}
 
-  private run(args: string[], collect = true): Promise<{ stdout: string; stderr: string }> {
+  private run(
+    args: string[],
+    collect = true,
+    onLine?: (line: string) => void,
+  ): Promise<{ stdout: string; stderr: string }> {
     // The argv is logged in full on every call. Without it a failure is
     // indistinguishable from a different failure, and this code path has
     // already cost days of guessing at which flags were actually in play.
@@ -55,7 +72,17 @@ export class YtdlpService {
       let stdout = '';
       let stderr = '';
       if (collect) proc.stdout.on('data', (c) => (stdout += c));
-      else proc.stdout.resume();
+      else if (onLine) {
+        // Progress lines only, split on the newlines --newline guarantees; a
+        // chunk can end mid-line, so the remainder waits for the next one.
+        let buffer = '';
+        proc.stdout.on('data', (chunk: Buffer) => {
+          buffer += chunk.toString('utf8');
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) if (line.trim()) onLine(line.trim());
+        });
+      } else proc.stdout.resume();
       proc.stderr.on('data', (c) => (stderr += c));
 
       proc.on('error', (error) =>
@@ -124,7 +151,18 @@ export class YtdlpService {
     }
   }
 
-  async download(accountId: string, videoId: string, outPath: string): Promise<void> {
+  /**
+   * `onProgress` receives 0-100, or null while the size is still unknown. It is
+   * the only honest thing to show during a restore: a 400 MB video takes
+   * minutes, and the alternative is a spinner that looks the same whether the
+   * download is running or wedged.
+   */
+  async download(
+    accountId: string,
+    videoId: string,
+    outPath: string,
+    onProgress?: (percent: number | null) => void,
+  ): Promise<void> {
     await this.accounts.withCookies(accountId, async (cookiePath) => {
       try {
         // No --no-warnings. yt-dlp reports the things that matter here as
@@ -141,13 +179,47 @@ export class YtdlpService {
             // "HTTP Error 416: Requested range not satisfiable" — for good,
             // until somebody deletes the file by hand.
             '--force-overwrites',
+            // YouTube serves these as DASH fragments, which yt-dlp fetches one
+            // at a time by default — a single stream on a link that has room
+            // for several. Four is where the gain flattens out and stays well
+            // inside what one video's CDN will serve without throttling.
+            '--concurrent-fragments', '4',
+            // One progress line per update instead of a carriage-returned bar,
+            // and only the two numbers this needs. `total_bytes` is absent
+            // until the download starts and stays NA for some fragmented
+            // streams, so the estimate is the fallback.
+            '--newline',
+            '--progress-template',
+            `${PROGRESS_PREFIX} %(progress.downloaded_bytes)s %(progress.total_bytes,progress.total_bytes_estimate)s`,
             '-o', outPath,
             this.url(videoId),
           ],
           false,
+          onProgress &&
+            ((line) => {
+              const percent = percentIn(line);
+              if (percent !== undefined) onProgress(percent);
+            }),
         );
       } catch (error) {
         const message = (error as Error).message;
+        if (looksSignedOut(message)) {
+          // The jar no longer authenticates, and the video being private is
+          // only how that shows up: YouTube answers a signed-out request for
+          // any private video with exactly this sentence, so yt-dlp's wording
+          // sends everyone looking at the video instead of at the session.
+          // Recording it is what makes the Accounts page say so too, rather
+          // than leaving a jar marked OK that has not worked for hours.
+          await this.accounts.recordCookieHealth(accountId, false);
+          throw new CookiesExpiredError(
+            `the stored cookies for this account no longer authenticate, so ${videoId} reads as ` +
+              'a private video nobody is signed in to see. Capture the session again from the ' +
+              'Accounts page (yt-dlp: ' +
+              `${firstLine(error)})`,
+            error instanceof YtdlpError ? error.stderr : message,
+            error instanceof YtdlpError ? error.argv : [],
+          );
+        }
         if (message.includes('Requested format is not available')) {
           // Wrapped, not replaced. The old version threw away yt-dlp's own
           // output and left "still transcoding" as the only evidence, which is
@@ -181,6 +253,43 @@ export class YtdlpService {
   private url(videoId: string): string {
     return `https://www.youtube.com/watch?v=${videoId}`;
   }
+}
+
+/** Marks the lines written by --progress-template, so the rest can be ignored. */
+const PROGRESS_PREFIX = 'yts-progress';
+
+/**
+ * The percentage on a progress line: a number, null while the total is still
+ * unknown, and undefined for any other line yt-dlp prints.
+ *
+ * The three cases are distinct on purpose. Treating "not a progress line" as
+ * null would blank a bar that was already moving, every time yt-dlp mentions a
+ * player client.
+ */
+export function percentIn(line: string): number | null | undefined {
+  if (!line.startsWith(PROGRESS_PREFIX)) return undefined;
+
+  const [done, total] = line.slice(PROGRESS_PREFIX.length).trim().split(/\s+/);
+  const bytes = Number(done);
+  const size = Number(total);
+  if (!Number.isFinite(bytes) || !Number.isFinite(size) || size <= 0) return null;
+  return (bytes / size) * 100;
+}
+
+/**
+ * Whether yt-dlp's complaint is really "this request was not signed in".
+ *
+ * Every upload here is private, so an unauthenticated request cannot tell a
+ * missing video from one it is simply not allowed to see — and YouTube says
+ * "Private video" for both. The bot check is the same class of answer: it is
+ * what a signed-out client gets asked.
+ */
+function looksSignedOut(message: string): boolean {
+  return (
+    message.includes('Private video') ||
+    message.includes('Sign in to confirm') ||
+    message.includes('This video is available to this channel')
+  );
 }
 
 /** For log lines and error messages; run() has already logged the whole thing. */

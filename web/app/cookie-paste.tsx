@@ -50,7 +50,6 @@ export function CookiePaste({
         account: string | null;
       }>(`/accounts/${accountId}/cookies/header`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ header: paste }),
       });
 
@@ -121,7 +120,7 @@ export function CookiePaste({
       <textarea
         value={paste}
         onChange={(event) => setPaste(event.target.value)}
-        placeholder="VISITOR_INFO1_LIVE=…; __Secure-3PSID=…; SAPISID=…; LOGIN_INFO=…"
+        placeholder="SID=…; HSID=…; SAPISID=…; __Secure-1PSID=…; LOGIN_INFO=…"
         rows={4}
         spellCheck={false}
         style={{ width: '100%', fontFamily: 'var(--mono, monospace)', fontSize: '0.8rem' }}
@@ -144,6 +143,13 @@ export function CookiePaste({
         <strong>Copy → Copy as cURL</strong> of that same row is accepted here too, if that is
         easier. The console is not: <span className="mono">document.cookie</span> cannot see{' '}
         <span className="mono">HttpOnly</span> cookies, and those are the ones that authenticate.
+      </p>
+      <p className="small muted">
+        The row has to be from <span className="mono">youtube.com</span> in its own tab. A video
+        embedded in another site sends only its cross-site cookies — a header of{' '}
+        <span className="mono">__Secure-3P…</span> and <span className="mono">ST-…</span> and no{' '}
+        <span className="mono">SID</span> — which YouTube reads as signed out, and every private
+        video then reports itself as private rather than as a session problem.
       </p>
       <p className="small" style={{ color: 'var(--warn)' }}>
         Why the private window: a header copied from the window you keep browsing in is a snapshot of

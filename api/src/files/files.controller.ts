@@ -25,8 +25,9 @@ import type { Request, Response } from 'express';
 import { FilesService } from './files.service';
 import type { StoredFile } from './stored-file.entity';
 import { RestoreCache } from './restore-cache';
+import { RestoreProgress } from './restore-progress';
 import { CodecService } from '../codec/codec.service';
-import { YtdlpService } from '../youtube/ytdlp.service';
+import { CookiesExpiredError, YtdlpService } from '../youtube/ytdlp.service';
 import { MIN_DECODABLE_HEIGHT } from '../youtube/constants';
 import { SessionGuard } from '../auth/session.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -40,6 +41,7 @@ export class FilesController {
     private readonly ytdlp: YtdlpService,
     private readonly codec: CodecService,
     private readonly cache: RestoreCache,
+    private readonly restoring: RestoreProgress,
   ) {}
 
   /**
@@ -283,9 +285,14 @@ export class FilesController {
     await this.files.ensureDir('restore', file.id);
 
     const videoPath = join(dir, 'download.mp4');
+    this.restoring.begin(file.id);
     try {
-      await this.ytdlp.download(file.ytAccountId, file.videoId, videoPath);
-      const result = await this.codec.decode(videoPath, dir);
+      await this.ytdlp.download(file.ytAccountId, file.videoId, videoPath, (percent) =>
+        this.restoring.set(file.id, 'downloading', percent),
+      );
+      const result = await this.codec.decode(videoPath, dir, (percent) =>
+        this.restoring.set(file.id, 'decoding', percent),
+      );
 
       if (file.importedAt) {
         // A row read back off the channel knows only what the description said.
@@ -310,8 +317,27 @@ export class FilesController {
     } catch (error) {
       // Leaving the scratch behind is what caused the 416 in the first place.
       await rm(dir, { recursive: true, force: true });
+      // Expired cookies are the caller's to fix, not a fault in this request:
+      // as a 500 it reached the page as yt-dlp's paragraph about --cookies,
+      // which reads like a bug in the app rather than an errand on the
+      // Accounts page.
+      if (error instanceof CookiesExpiredError) throw new BadRequestException(error.message);
       throw error;
+    } finally {
+      this.restoring.end(file.id);
     }
+  }
+
+  /**
+   * How far the restore of this file has got, for a page that is waiting on
+   * one. Cheap on purpose: a poll every second while a download runs.
+   */
+  @Get(':id/restore')
+  async restoreProgress(@CurrentUser() user: User, @Param('id') id: string) {
+    // Through the service so one user cannot watch another's restore, and so
+    // an unknown id is a 404 rather than a permanent 'idle'.
+    await this.files.get(user.id, id);
+    return this.restoring.get(id);
   }
 
   /** Puts a failed file back on the queue it stopped at, from whatever is still on disk. */

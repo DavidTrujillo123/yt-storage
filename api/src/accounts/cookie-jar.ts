@@ -19,8 +19,23 @@ const ALLOWED_DOMAINS = new Set([
   '.ytimg.com',
 ]);
 
-/** Cookies that must survive the filter for the jar to authenticate at all. */
-const REQUIRED = ['__Secure-3PSID', '__Secure-1PSID', 'SAPISID', 'SID'];
+/**
+ * Cookies that must survive the filter for the jar to authenticate at all.
+ *
+ * First-party only, and that distinction is the whole point. A browser sends
+ * `__Secure-3PSID` and its `3P` siblings on cross-site requests — an embedded
+ * player, a googlevideo range, a `youtubei` call made from another origin — so
+ * a header copied out of one of those requests looks like a session and is
+ * not one. YouTube answers such a jar as if nobody were signed in: every
+ * private video reads "Private video. Sign in if you've been granted access",
+ * which is the same sentence a genuinely inaccessible video produces, and the
+ * cause is invisible from there. Refusing the jar at the door is the only
+ * place this can be explained.
+ */
+const REQUIRED = ['SID', '__Secure-1PSID'];
+
+/** Present when a header was copied from a cross-site request; never enough. */
+const THIRD_PARTY = ['__Secure-3PSID', '__Secure-3PAPISID'];
 
 const HTTP_ONLY = '#HttpOnly_';
 
@@ -41,6 +56,26 @@ export interface FilterResult {
   domains: string[];
 }
 
+/**
+ * Why a jar was refused, in terms of what the person did rather than of cookie
+ * names they have never heard of.
+ */
+function missingSessionMessage(names: Set<string>): string {
+  if (THIRD_PARTY.some((name) => names.has(name))) {
+    return (
+      'those are third-party cookies only, which YouTube treats as signed out - ' +
+      'they come from a request made by an embedded player rather than by the site. ' +
+      'Copy the header from the www.youtube.com page itself: open youtube.com signed in, ' +
+      'DevTools > Network, click the first document request to www.youtube.com, and copy that ' +
+      `one as cURL. A usable jar contains ${REQUIRED.join(' or ')}`
+    );
+  }
+  return (
+    'that jar has no Google session cookie - export it while signed in to YouTube, ' +
+    'and do not log out afterwards'
+  );
+}
+
 export function filterCookieJar(raw: Buffer): FilterResult {
   const lines = raw.toString('utf8').split(/\r?\n/);
 
@@ -54,11 +89,7 @@ export function filterCookieJar(raw: Buffer): FilterResult {
   }
 
   const names = new Set(kept.map(nameOf));
-  if (!REQUIRED.some((name) => names.has(name))) {
-    throw new Error(
-      'that jar has no Google session cookie - export it while signed in to YouTube, and do not log out afterwards',
-    );
-  }
+  if (!REQUIRED.some((name) => names.has(name))) throw new Error(missingSessionMessage(names));
 
   return {
     jar: Buffer.from(`# Netscape HTTP Cookie File\n${kept.join('\n')}\n`, 'utf8'),

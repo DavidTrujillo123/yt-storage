@@ -218,7 +218,8 @@ export class AccountsService {
     if (host && !/(^|\.)youtube\.com$/.test(host)) {
       throw new Error(
         `that request went to ${host}, which receives no YouTube cookies. Copy a request to ` +
-          'youtube.com instead — the page itself, or any of the /youtubei/v1/ ones.',
+          'youtube.com instead, made by a youtube.com tab of its own — a row from a video ' +
+          'embedded in another site carries only cross-site cookies, which do not authenticate.',
       );
     }
 
