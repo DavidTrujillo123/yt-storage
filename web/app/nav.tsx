@@ -43,8 +43,8 @@ export function Nav() {
           </Link>
         )}
         <span className="spacer" />
-        <span className="small muted mono" title="Which build this browser is running">
-          build {process.env.NEXT_PUBLIC_BUILD}
+        <span className="small muted mono" title="Which version this browser is running">
+          {process.env.NEXT_PUBLIC_BUILD}
         </span>
         <button onClick={signOut}>Sign out</button>
       </nav>
