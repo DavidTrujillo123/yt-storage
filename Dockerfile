@@ -55,21 +55,18 @@ FROM node:25-trixie-slim AS runtime
 # "Requested format is not available", which reads exactly like a video that
 # has not finished transcoding. That cost days.
 #
-# chromium, Xvfb, x11vnc and noVNC are the cookie capture. Every deployment
-# needs a cookie jar - a private video is only served to a signed-in browser
-# session - and getting one means signing in to Google by hand, in a browser.
-# A container has no screen and cannot reach the browser on your desk: it
-# cannot launch it, and on macOS it could not decrypt its cookies either, since
-# that key lives in the Keychain. So the image brings a browser, runs it on a
-# virtual display, and the API shows it in the page you are already signed in
-# to. That is what makes the last setup step a button here rather than a
-# command to run somewhere else.
+# No browser in this image, and nothing to run on your machine either. The
+# cookie jar every deployment needs comes from the `cookie:` header the browser
+# you are already using sends to YouTube: DevTools shows it, you paste it into
+# the setup page, and the API turns it into a jar. A container cannot read that
+# browser itself — it cannot exec on the host, and on macOS it is a Linux VM
+# with no access to the Keychain key that decrypts the cookie database — so the
+# copy has to come from the person, and this is the shortest way to ask.
 #
-# It is roughly half this image. The alternative was a step that cannot be
-# completed by the people who deploy this the documented way.
+# This image carried chromium, Xvfb, x11vnc and noVNC to do it in-page instead.
+# That was roughly 600MB of it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg python3 python3-pip ca-certificates tini \
-      chromium xvfb x11vnc novnc fonts-liberation \
     && pip3 install --break-system-packages --no-cache-dir yt-dlp yt-dlp-ejs \
     && rm -rf /var/lib/apt/lists/*
 

@@ -10,11 +10,8 @@ import cookieParser from 'cookie-parser';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { AppModule } from './app.module';
-import { AuthService } from './auth/auth.service';
 import { ExceptionLogger } from './common/exception-logger';
 import { applySecretKey } from './common/secret-key';
-import { NOVNC_DIR, remoteAvailable } from './accounts/remote-browser';
-import { attachVncProxy } from './accounts/vnc-proxy';
 
 /**
  * One process, one port: the API under /api and the UI on everything else.
@@ -52,14 +49,6 @@ async function bootstrap(): Promise<void> {
     new Logger('bootstrap').warn(`no UI at ${webDir}; run pnpm build to produce it`);
   }
 
-  // The browser this image ships for cookie capture, and the page that shows
-  // it. noVNC's own files are a public JavaScript app with nothing private in
-  // them, so they are served like any other asset; the socket carrying the
-  // actual screen is what checks a session, in attachVncProxy.
-  if (remoteAvailable()) {
-    app.useStaticAssets(NOVNC_DIR, { prefix: '/vnc' });
-  }
-
   // Node cuts a request off after five minutes by default, and does it by
   // destroying the socket: no exception, no log, and the browser sees only a
   // network error. That is a poor fit for an app whose whole purpose is large
@@ -68,8 +57,6 @@ async function bootstrap(): Promise<void> {
   const server = app.getHttpServer();
   server.requestTimeout = 2 * 60 * 60 * 1000;
   server.headersTimeout = server.requestTimeout + 60_000;
-
-  if (remoteAvailable()) attachVncProxy(server, app.get(AuthService));
 
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port);
