@@ -80,6 +80,40 @@ export interface Bootstrap {
   minPasswordLength: number;
 }
 
+/**
+ * Whether the API can open a browser itself to fetch a cookie jar.
+ *
+ * False whenever the API is not sharing a machine and a screen with a browser
+ * — a container, a headless box — and `reason` is then the one sentence saying
+ * which. `isDefault` is false when the OS default is Safari or Firefox: neither
+ * can be driven this way, so a Chromium-family browser is used and the UI says
+ * which one rather than surprising anyone with an unexpected window.
+ */
+export interface CookieCapture {
+  available: boolean;
+  browser: string | null;
+  browserName: string | null;
+  isDefault: boolean;
+  reason: string | null;
+}
+
+export type CaptureState =
+  | 'IDLE'
+  | 'LAUNCHING'
+  | 'WAITING_FOR_LOGIN'
+  | 'CAPTURING'
+  | 'DONE'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export interface CaptureProgress {
+  state: CaptureState;
+  browserName?: string;
+  message?: string;
+  secondsLeft?: number | null;
+  result?: { kept: number; dropped: number; domains: string[] } | null;
+}
+
 export interface Status {
   accounts: Account[];
   canUpload: boolean;
@@ -87,6 +121,7 @@ export interface Status {
   files: Partial<Record<FileStatus, number>>;
   /** What the server will send Google as the callback address. */
   redirectUri: string;
+  cookieCapture: CookieCapture;
 }
 
 export interface TarEntry {

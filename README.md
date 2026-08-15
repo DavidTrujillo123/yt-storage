@@ -110,6 +110,13 @@ git tag v0.1.0 && git push origin v0.1.0
 The image tags drop the `v`, so `v0.1.0` publishes `:0.1.0`, `:0.1` and
 `:latest`. Pull `:0.1.0`.
 
+Bump `version` in the root, `api`, `web` and `packages/codec` package files in
+the commit you tag, and keep all four the same. The UI prints `web`'s next to
+Sign out, so a mismatch there is what someone reads off the screen when they
+report which version they are on. It comes from the file rather than from `git
+describe` because the release image is built from a copied tree with no
+repository in it.
+
 amd64 and arm64 are built on runners of their own architecture rather than one
 under emulation — the image compiles `better-sqlite3` and the Reed-Solomon addon
 from C++, and QEMU turns that from minutes into most of an hour. Both land under
@@ -239,7 +246,15 @@ API so you can leave and return. What it does, spelled out:
    - close the private window **without logging out** — logging out kills the
      session server-side and the exported jar dies with it
 
-   Or skip the extension entirely:
+   Or skip the extension entirely. When the API runs natively on a machine with
+   a screen and a Chromium-family browser, `/setup` step 4 does the whole thing
+   from a button: it opens that browser against a brand new throwaway profile,
+   waits for you to sign in, stores the jar and deletes the profile. `/status`
+   reports `cookieCapture.available` so the page knows whether to offer it, and
+   `cookieCapture.reason` says why not when it cannot — a container has no
+   browser and no screen.
+
+   For those cases the same capture runs where you are instead:
 
    ```bash
    pnpm run cookies
@@ -328,6 +343,7 @@ redirect URI, which keeps its address.
 | `GET/POST /accounts`, `DELETE /accounts/:id` | YouTube accounts |
 | `GET /accounts/:id/connect?return=setup` | start OAuth for that account |
 | `POST /accounts/:id/cookies` | store its cookie jar |
+| `POST/GET/DELETE /accounts/:id/cookies/capture` | drive a throwaway browser profile here: start, poll, cancel |
 | `POST /accounts/:id/cookies/from-browser` | read a local browser profile (see the warning above) |
 | `POST /files` | multipart upload; several parts become one archive |
 | `GET /files` | your catalogue with status and progress |

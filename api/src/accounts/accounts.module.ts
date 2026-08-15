@@ -5,6 +5,7 @@ import { memoryStorage } from 'multer';
 import { YtAccount } from './yt-account.entity';
 import { AccountsService } from './accounts.service';
 import { CookieLock } from './cookie-lock';
+import { BrowserCapture } from './browser-capture';
 import { AccountsController } from './accounts.controller';
 
 @Global()
@@ -16,7 +17,7 @@ import { AccountsController } from './accounts.controller';
     MulterModule.register({ storage: memoryStorage(), limits: { fileSize: 1024 * 1024 } }),
   ],
   controllers: [AccountsController],
-  providers: [AccountsService, CookieLock],
+  providers: [AccountsService, CookieLock, BrowserCapture],
   exports: [AccountsService],
 })
 export class AccountsModule {}

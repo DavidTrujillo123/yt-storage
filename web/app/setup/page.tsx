@@ -4,7 +4,14 @@ import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { api, ApiError } from '@/lib/api';
-import type { Account, Bootstrap, Status } from '@/lib/api';
+import type {
+  Account,
+  Bootstrap,
+  CaptureProgress,
+  CaptureState,
+  CookieCapture,
+  Status,
+} from '@/lib/api';
 import { useSession } from '@/lib/use-session';
 
 /** useSearchParams needs a boundary; the OAuth callback returns with ?connected=1. */
@@ -122,7 +129,13 @@ function Setup() {
           summary={account ? `cookie jar stored and healthy` : undefined}
         >
           {account && (
-            <Cookies account={account} origin={origin} onDone={refresh} onError={setError} />
+            <Cookies
+              account={account}
+              origin={origin}
+              capture={status.cookieCapture}
+              onDone={refresh}
+              onError={setError}
+            />
           )}
         </Step>
       </div>
@@ -380,11 +393,13 @@ function CreateAccount({
 function Cookies({
   account,
   origin,
+  capture,
   onDone,
   onError,
 }: {
   account: Account;
   origin: string;
+  capture: CookieCapture;
   onDone: () => Promise<void>;
   onError: (message: string) => void;
 }) {
@@ -414,14 +429,24 @@ function Cookies({
         cookie jar.
       </p>
 
-      <h3 style={{ marginBottom: '0.35rem' }}>Run this on the machine with your browser</h3>
-      <Copyable text={`YTS_API=${origin} YTS_ACCOUNT=${account.id} pnpm run cookies`} />
-      <p className="small muted">
-        It opens a brand new, throwaway browser profile, waits for you to sign in to YouTube, takes
-        the jar and deletes the profile. Nothing ever opens that profile again, which is the point —
-        Google rotates session cookies on use, and a jar shared with a browser you keep using is
-        invalidated within minutes.
-      </p>
+      {capture.available ? (
+        <CaptureButton account={account} capture={capture} onDone={onDone} onError={onError} />
+      ) : (
+        <>
+          <h3 style={{ marginBottom: '0.35rem' }}>Run this on the machine with your browser</h3>
+          <p className="small muted">
+            This server cannot open a browser itself — {capture.reason} — so the capture runs where
+            you are instead. It talks back to this instance over HTTP.
+          </p>
+          <Copyable text={`YTS_API=${origin} YTS_ACCOUNT=${account.id} pnpm run cookies`} />
+          <p className="small muted">
+            It opens a brand new, throwaway browser profile, waits for you to sign in to YouTube,
+            takes the jar and deletes the profile. Nothing ever opens that profile again, which is
+            the point — Google rotates session cookies on use, and a jar shared with a browser you
+            keep using is invalidated within minutes.
+          </p>
+        </>
+      )}
 
       <h3 style={{ marginBottom: '0.35rem' }}>Or upload a cookies.txt</h3>
       <p className="small muted">
@@ -447,6 +472,142 @@ function Cookies({
       <p className="small" style={{ color: 'var(--warn)' }}>
         A jar authenticates every Google service on that account, not just YouTube. Use a throwaway
         account that is not the recovery address for anything else.
+      </p>
+    </>
+  );
+}
+
+/** States where the server still has a browser open and something to report. */
+const RUNNING: CaptureState[] = ['LAUNCHING', 'WAITING_FOR_LOGIN', 'CAPTURING'];
+
+/**
+ * The last step as one button: the server opens a browser, you sign in, it
+ * takes the jar.
+ *
+ * A sign-in runs for minutes, so the request that starts it returns at once and
+ * this polls for where it got to. Everything shown comes from the server's
+ * state rather than from anything tracked here, so reloading mid-capture picks
+ * the same capture back up.
+ *
+ * It is *not* a private window, and cannot be: private-window cookies live only
+ * in RAM and are never written anywhere readable. A new throwaway profile,
+ * deleted afterwards, is what gives the same guarantee — the session it holds
+ * is never opened again, so nothing rotates it out from under this app.
+ */
+function CaptureButton({
+  account,
+  capture,
+  onDone,
+  onError,
+}: {
+  account: Account;
+  capture: CookieCapture;
+  onDone: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [progress, setProgress] = useState<CaptureProgress | null>(null);
+  const [starting, setStarting] = useState(false);
+  const running = progress !== null && RUNNING.includes(progress.state);
+
+  // A capture that outlived this page — a reload, a second tab — is adopted on
+  // mount rather than competing with a new one.
+  useEffect(() => {
+    void api<CaptureProgress>(`/accounts/${account.id}/cookies/capture`)
+      .then((current) => {
+        if (current.state !== 'IDLE') setProgress(current);
+      })
+      .catch(() => undefined);
+  }, [account.id]);
+
+  useEffect(() => {
+    if (!running) return;
+
+    let live = true;
+    const timer = setInterval(async () => {
+      try {
+        const next = await api<CaptureProgress>(`/accounts/${account.id}/cookies/capture`);
+        if (!live) return;
+        setProgress(next);
+        // `refresh` is what flips the step to done; only worth a round trip
+        // once there is something new for it to read.
+        if (next.state === 'DONE') await onDone();
+      } catch (failure) {
+        if (live) onError((failure as Error).message);
+      }
+    }, 2000);
+
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [running, account.id, onDone, onError]);
+
+  async function start() {
+    setStarting(true);
+    try {
+      setProgress(await api<CaptureProgress>(`/accounts/${account.id}/cookies/capture`, { method: 'POST' }));
+    } catch (failure) {
+      onError((failure as Error).message);
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  async function cancel() {
+    try {
+      await api(`/accounts/${account.id}/cookies/capture`, { method: 'DELETE' });
+    } catch (failure) {
+      onError((failure as Error).message);
+    }
+  }
+
+  return (
+    <>
+      <h3 style={{ marginBottom: '0.35rem' }}>Sign in and let this take the jar</h3>
+      <p className="small muted">
+        Opens {capture.browserName} on the machine running this server, with a brand new, empty
+        profile. Sign in to the account behind <strong>{account.label}</strong>, and the profile is
+        deleted the moment its cookies are out — nothing ever opens it again, which is the point.
+        Google rotates session cookies on use, so a jar shared with a browser you keep using is
+        invalidated within minutes.
+        {!capture.isDefault && (
+          <>
+            {' '}
+            Your default browser cannot be driven this way — only Chromium-family ones can — so{' '}
+            {capture.browserName} is used instead.
+          </>
+        )}
+      </p>
+
+      <div className="row">
+        <button className="primary" onClick={() => void start()} disabled={starting || running}>
+          {running ? 'Waiting…' : starting ? 'Starting…' : `Open ${capture.browserName} and sign in`}
+        </button>
+        {running && <button onClick={() => void cancel()}>Cancel</button>}
+      </div>
+
+      {progress && progress.state !== 'IDLE' && (
+        <p
+          className="small"
+          style={{
+            color:
+              progress.state === 'FAILED'
+                ? 'var(--bad)'
+                : progress.state === 'DONE'
+                  ? 'var(--ok)'
+                  : undefined,
+          }}
+        >
+          {progress.message}
+          {progress.state === 'WAITING_FOR_LOGIN' && typeof progress.secondsLeft === 'number' && (
+            <span className="muted"> ({Math.ceil(progress.secondsLeft / 60)} min left)</span>
+          )}
+        </p>
+      )}
+
+      <p className="small muted">
+        Do not sign out in that window afterwards. Signing out ends the session on Google&apos;s
+        side, and the jar with it.
       </p>
     </>
   );

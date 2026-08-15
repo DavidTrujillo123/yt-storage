@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { api, ApiError, formatWhen } from '@/lib/api';
 import type { Account } from '@/lib/api';
@@ -130,10 +131,11 @@ function Accounts() {
             account.
           </p>
           <p className="small muted">
-            The safe way to produce one is <span className="mono">pnpm run cookies</span> on the machine with
-            the browser: it opens a throwaway profile, extracts the jar and deletes the profile, so nothing
-            ever rotates that session again. Uploading a <span className="mono">cookies.txt</span> below works
-            too — export it from a private window and close the window <em>without</em> logging out.
+            The safe way to produce one is step 4 of <Link href="/setup">setup</Link>, or{' '}
+            <span className="mono">pnpm run cookies</span> when this server has no browser of its own: either
+            opens a throwaway profile, extracts the jar and deletes the profile, so nothing ever rotates that
+            session again. Uploading a <span className="mono">cookies.txt</span> below works too — export it
+            from a private window and close the window <em>without</em> logging out.
           </p>
           <p className="small" style={{ color: 'var(--warn)' }}>
             A jar authenticates every Google service, not just YouTube. Use a throwaway account that is not

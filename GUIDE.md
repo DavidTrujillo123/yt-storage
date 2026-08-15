@@ -112,13 +112,11 @@ Open **`/setup`** in the app and it walks you through exactly these steps, check
 1. **Log in** to your yt-storage instance at `http://localhost:3000` and change the default password (step 1 of the wizard).
 2. **Add the account.** The label plus the client ID and client secret from step 5 above. Step 2 of the wizard, or `POST /accounts`.
 3. **Authorize it.** Step 3 sends you through the Google OAuth screen you just configured and brings you back to the wizard.
-4. **Give it cookies.** Every video uploaded through the app is private, and downloading a private video needs a logged-in session — a cookie jar, not just the OAuth token. The easiest way:
-   ```bash
-   pnpm run cookies
-   ```
-   This opens a brand-new, disposable browser profile, waits for you to log in to YouTube with that channel's account, grabs the session cookies, and throws the profile away. Nothing else ever touches that profile again, so nothing can silently invalidate the session behind the app's back.
+4. **Give it cookies.** Every video uploaded through the app is private, and downloading a private video needs a logged-in session — a cookie jar, not just the OAuth token. Step 4 of the wizard is a button: it opens a brand-new, disposable browser profile, waits for you to log in to YouTube with that channel's account, grabs the session cookies, and throws the profile away. Nothing else ever touches that profile again, so nothing can silently invalidate the session behind the app's back.
 
-   Run it on the machine with the browser; it talks to the API over HTTP, so it works against a container just as well. Step 4 of the wizard prints the exact line to paste, with the address and account already filled in:
+   The browser opens on the machine running the API, so the button is only offered when that machine has a screen and a Chromium-family browser (Brave, Chrome, Chromium, Edge, Vivaldi). It cannot be a private window, no matter the flags: private-window cookies live only in memory and are never written anywhere readable. A throwaway profile that gets deleted is what gives the same guarantee.
+
+   In a container there is neither browser nor screen, so the wizard prints a line to run where you are instead — same capture, talking back over HTTP, with the address and account already filled in:
    ```bash
    YTS_API=http://localhost:3000 YTS_ACCOUNT=<account id> pnpm run cookies
    ```
@@ -255,13 +253,11 @@ Abre **`/setup`** en la app y te guía exactamente por estos pasos, marcando cad
 1. **Inicia sesión** en tu instancia de yt-storage en `http://localhost:3000` y cambia la contraseña por defecto (paso 1 del asistente).
 2. **Añade la cuenta.** La etiqueta más el ID de cliente y el secreto de cliente del paso 5 anterior. Paso 2 del asistente, o `POST /accounts`.
 3. **Autorízala.** El paso 3 te lleva a través de la pantalla de OAuth de Google que acabas de configurar y te devuelve al asistente.
-4. **Dale las cookies.** Todo video subido por la app es privado, y descargar un video privado necesita una sesión iniciada — un frasco de cookies, no solo el token OAuth. La forma más fácil:
-   ```bash
-   pnpm run cookies
-   ```
-   Esto abre un perfil de navegador nuevo y desechable, espera a que inicies sesión en YouTube con la cuenta de ese canal, extrae las cookies de sesión y descarta el perfil. Nada más vuelve a tocar ese perfil, así que nada puede invalidar la sesión en silencio a espaldas de la app.
+4. **Dale las cookies.** Todo video subido por la app es privado, y descargar un video privado necesita una sesión iniciada — un frasco de cookies, no solo el token OAuth. El paso 4 del asistente es un botón: abre un perfil de navegador nuevo y desechable, espera a que inicies sesión en YouTube con la cuenta de ese canal, extrae las cookies de sesión y descarta el perfil. Nada más vuelve a tocar ese perfil, así que nada puede invalidar la sesión en silencio a espaldas de la app.
 
-   Ejecútalo en la máquina que tiene el navegador; habla con la API por HTTP, así que funciona igual contra un contenedor. El paso 4 del asistente imprime la línea exacta para pegar, con la dirección y la cuenta ya rellenadas:
+   El navegador se abre en la máquina donde corre la API, así que el botón solo aparece cuando esa máquina tiene pantalla y un navegador de la familia Chromium (Brave, Chrome, Chromium, Edge, Vivaldi). No puede ser una ventana privada, con ninguna combinación de flags: las cookies de una ventana privada viven solo en memoria y nunca se escriben en ningún sitio legible. Un perfil desechable que luego se borra es lo que da la misma garantía.
+
+   En un contenedor no hay ni navegador ni pantalla, así que el asistente imprime una línea para ejecutar donde estés tú — la misma captura, hablando de vuelta por HTTP, con la dirección y la cuenta ya rellenadas:
    ```bash
    YTS_API=http://localhost:3000 YTS_ACCOUNT=<id de la cuenta> pnpm run cookies
    ```

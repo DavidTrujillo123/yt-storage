@@ -119,6 +119,37 @@ export class AccountsController {
   }
 
   /**
+   * Opens a browser here, waits for a sign-in, and stores the jar — the wizard
+   * step as one button.
+   *
+   * Returns immediately with the first state rather than holding the request
+   * open for the minutes a sign-in takes; `GET` below is how the page follows
+   * along, and `DELETE` gives up.
+   */
+  @Post(':id/cookies/capture')
+  @UseGuards(SessionGuard)
+  async startCapture(@CurrentUser() user: User, @Param('id') id: string) {
+    try {
+      return await this.accounts.startCookieCapture(user.id, id);
+    } catch (error) {
+      throw new BadRequestException((error as Error).message);
+    }
+  }
+
+  @Get(':id/cookies/capture')
+  @UseGuards(SessionGuard)
+  async captureStatus(@CurrentUser() user: User, @Param('id') id: string) {
+    return (await this.accounts.cookieCaptureStatus(user.id, id)) ?? { state: 'IDLE' };
+  }
+
+  @Delete(':id/cookies/capture')
+  @UseGuards(SessionGuard)
+  async cancelCapture(@CurrentUser() user: User, @Param('id') id: string) {
+    await this.accounts.cancelCookieCapture(user.id, id);
+    return { cancelled: id };
+  }
+
+  /**
    * Reads cookies out of a local browser profile instead of asking for a file.
    * Only works when the API shares a machine with the browser.
    */

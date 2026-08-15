@@ -12,6 +12,7 @@ import { SettingsService } from '../common/settings.service';
 import { CookieHealth, YtAccount } from './yt-account.entity';
 import { filterCookieJar, hasSessionCookie } from './cookie-jar';
 import { CookieLock } from './cookie-lock';
+import { BrowserCapture, type CaptureProgress } from './browser-capture';
 import { quotaIsStale, quotaSummary, selectUploadAccount } from './quota';
 import { OAUTH_SCOPES } from '../youtube/constants';
 
@@ -62,6 +63,7 @@ export class AccountsService {
     private readonly settings: SettingsService,
     private readonly config: ConfigService,
     private readonly lock: CookieLock,
+    private readonly capture: BrowserCapture,
   ) {}
 
   list(userId: string): Promise<YtAccount[]> {
@@ -191,6 +193,29 @@ export class AccountsService {
 
     this.log.log(`cookie jar stored: kept ${kept}, discarded ${dropped} unrelated`);
     return { kept, dropped, domains };
+  }
+
+  /**
+   * Opens a browser on this machine against a throwaway profile, waits for a
+   * YouTube sign-in, and stores what comes out — the wizard's last step as a
+   * button rather than a command to paste elsewhere.
+   *
+   * Ownership is checked here, before anything is launched, so the capture that
+   * a poll later reports on can only ever belong to the caller.
+   */
+  async startCookieCapture(userId: string, accountId: string): Promise<CaptureProgress> {
+    await this.loadSecret(userId, accountId);
+    return this.capture.start(accountId, (jar) => this.storeCookies(userId, accountId, jar));
+  }
+
+  async cookieCaptureStatus(userId: string, accountId: string): Promise<CaptureProgress | null> {
+    await this.loadSecret(userId, accountId);
+    return this.capture.status(accountId);
+  }
+
+  async cancelCookieCapture(userId: string, accountId: string): Promise<void> {
+    await this.loadSecret(userId, accountId);
+    this.capture.stop(accountId);
   }
 
   /**

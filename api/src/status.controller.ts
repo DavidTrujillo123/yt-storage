@@ -4,6 +4,7 @@ import { SessionGuard } from './auth/session.guard';
 import { CurrentUser } from './auth/current-user.decorator';
 import type { User } from './auth/user.entity';
 import { AccountsService } from './accounts/accounts.service';
+import { captureCapability } from './accounts/browser-capture';
 import { FilesService } from './files/files.service';
 
 @Controller('status')
@@ -38,6 +39,10 @@ export class StatusController {
         'GOOGLE_REDIRECT_URI',
         'http://localhost:3000/accounts/callback',
       ),
+      // Whether this API can drive a browser to fetch a cookie jar by itself.
+      // It cannot in a container, so the setup page has to know before it
+      // offers a button, and shows the command to run elsewhere instead.
+      cookieCapture: captureCapability(),
     };
   }
 }
