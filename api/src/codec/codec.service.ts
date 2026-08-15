@@ -90,8 +90,20 @@ export class CodecService {
     });
   }
 
-  async decode(videoPath: string, outputDir: string): Promise<DecodeResult> {
+  async decode(
+    videoPath: string,
+    outputDir: string,
+    onProgress?: (percent: number) => void,
+  ): Promise<DecodeResult> {
     this.log.log(`decoding ${videoPath}`);
-    return this.run<DecodeResult>(['decode', videoPath, outputDir]);
+    // Frames read out of the frames the video holds. The total is absent when
+    // the container does not carry one, and then there is no percentage to
+    // report — the caller shows the phase without a bar rather than a made-up
+    // number.
+    return this.run<DecodeResult>(['decode', videoPath, outputDir], (event) => {
+      if (event.type === 'progress' && typeof event.frames === 'number' && typeof event.total === 'number') {
+        onProgress?.(Math.round((event.frames / event.total) * 100));
+      }
+    });
   }
 }

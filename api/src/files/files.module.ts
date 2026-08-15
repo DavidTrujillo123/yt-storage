@@ -11,6 +11,7 @@ import { StoredFile } from './stored-file.entity';
 import { FilesController } from './files.controller';
 import { FilesService } from './files.service';
 import { RestoreCache } from './restore-cache';
+import { RestoreProgress } from './restore-progress';
 import { CodecModule } from '../codec/codec.module';
 import { YoutubeModule } from '../youtube/youtube.module';
 import { ENCODE_QUEUE, UPLOAD_QUEUE, VERIFY_QUEUE } from '../jobs/queues';
@@ -50,7 +51,7 @@ import { ENCODE_QUEUE, UPLOAD_QUEUE, VERIFY_QUEUE } from '../jobs/queues';
     }),
   ],
   controllers: [FilesController],
-  providers: [FilesService, RestoreCache],
-  exports: [FilesService, RestoreCache],
+  providers: [FilesService, RestoreCache, RestoreProgress],
+  exports: [FilesService, RestoreCache, RestoreProgress],
 })
 export class FilesModule {}

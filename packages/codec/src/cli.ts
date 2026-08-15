@@ -63,8 +63,13 @@ async function main(): Promise<void> {
     if (!video) throw new Error('usage: decode <video> [output-dir]');
 
     await mkdir(outDir, { recursive: true });
-    const stats = await decodeVideo(video, outDir, (n) => {
-      if (n % 30 === 0) progress(json, { type: 'progress', frames: n }, `reading frame ${n}`);
+    const stats = await decodeVideo(video, outDir, (n, total) => {
+      if (n % 30 !== 0) return;
+      progress(
+        json,
+        { type: 'progress', frames: n, total },
+        total ? `reading frame ${n}/${total}` : `reading frame ${n}`,
+      );
     });
 
     if (json) {

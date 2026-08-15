@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { api, entryUrl, formatBytes, inlineUrl, previewKind } from '@/lib/api';
-import type { StoredFile, TarEntry } from '@/lib/api';
+import type { RestoreState, StoredFile, TarEntry } from '@/lib/api';
 
 /** Read into the page rather than streamed to an element, so both are capped. */
 const TEXT_LIMIT = 200 * 1024;
@@ -55,6 +55,62 @@ function hexDump(bytes: Uint8Array): string {
 }
 
 /**
+ * Polls the restore of one file while the page is waiting on it.
+ *
+ * One second: fast enough that a bar moves, slow enough to be free next to a
+ * download measured in hundreds of megabytes. The poll stops the moment the
+ * thing it was waiting for arrives.
+ */
+function useRestoreProgress(fileId: string, active: boolean): RestoreState | null {
+  const [state, setState] = useState<RestoreState | null>(null);
+
+  useEffect(() => {
+    if (!active) {
+      setState(null);
+      return;
+    }
+    let live = true;
+    const poll = () => {
+      api<RestoreState>(`/files/${fileId}/restore`)
+        .then((next) => live && setState(next))
+        // A failed poll says nothing about the restore itself, and the request
+        // being waited on reports its own errors.
+        .catch(() => undefined);
+    };
+    poll();
+    const timer = setInterval(poll, 1000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [fileId, active]);
+
+  return state;
+}
+
+/** The phase and its bar, or the phase alone when there is no total to divide by. */
+function RestoreBar({ state }: { state: RestoreState }) {
+  if (state.phase === 'idle') return null;
+
+  const label =
+    state.phase === 'downloading' ? 'Pulling the video back off YouTube' : 'Decoding the video';
+
+  return (
+    <div style={{ margin: '0.4rem 0' }}>
+      <p className="small muted" style={{ margin: '0 0 0.25rem' }}>
+        {label}
+        {state.percent !== null ? ` — ${state.percent}%` : '…'}
+      </p>
+      {state.percent !== null && (
+        <div className="progress" style={{ maxWidth: 'none' }}>
+          <span style={{ width: `${state.percent}%` }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * Shows a stored file without saving it.
  *
  * For anything already verified this means the API pulls the video back off
@@ -72,11 +128,20 @@ export function Preview({ file, onClose }: { file: StoredFile; onClose: () => vo
   const kind = chosen !== null && entries ? previewKind(entries[chosen].name) : previewKind(file.name);
   const url = chosen !== null ? entryUrl(file.id, chosen, true) : inlineUrl(file.id);
   const reads = !isBundle || chosen !== null ? kind === 'text' || kind === null : false;
+  const listing = isBundle && chosen === null;
 
   const [body, setBody] = useState<string | null>(null);
   const [bytesRead, setBytesRead] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(reads || isBundle);
+
+  // An image, a video or a PDF is fetched by the element rather than by us, and
+  // that request pays for the restore just the same — so the wait is over when
+  // the element says so, not when an effect finishes.
+  const rendered = !listing && !reads && kind !== null;
+  const [mediaReady, setMediaReady] = useState(false);
+  const waiting = !file.sourcePath && (loading || (rendered && !mediaReady));
+  const restore = useRestoreProgress(file.id, waiting);
 
   useEffect(() => {
     // Escape backs out of an entry before it closes the whole sheet.
@@ -108,6 +173,7 @@ export function Preview({ file, onClose }: { file: StoredFile; onClose: () => vo
     setBody(null);
     setBytesRead(0);
     setError(null);
+    setMediaReady(false);
   }, [chosen]);
 
   useEffect(() => {
@@ -133,7 +199,6 @@ export function Preview({ file, onClose }: { file: StoredFile; onClose: () => vo
   // An imported row has no size until its first download, and a preview cannot
   // claim it was cut short against a length nobody has measured.
   const truncated = bytesRead > 0 && shownSize !== null && bytesRead < shownSize;
-  const listing = isBundle && chosen === null;
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -156,11 +221,15 @@ export function Preview({ file, onClose }: { file: StoredFile; onClose: () => vo
           <button onClick={onClose}>Close</button>
         </div>
 
-        {!file.sourcePath && loading && (
-          <p className="small muted">
-            Not on disk any more — this is being pulled back off YouTube and decoded, which takes a
-            few seconds. After that it is cached, and everything here is instant.
-          </p>
+        {waiting && (
+          <>
+            <p className="small muted">
+              Not on disk any more — this is being pulled back off YouTube and decoded. How long
+              that takes follows the size of the file, since the video carries about 383 KB of it
+              per second. Once it is done the bytes are cached, and everything here is instant.
+            </p>
+            {restore && <RestoreBar state={restore} />}
+          </>
         )}
 
         {listing && entries && (
@@ -199,10 +268,23 @@ export function Preview({ file, onClose }: { file: StoredFile; onClose: () => vo
           <div className="viewer">
             {error && <p className="error">{error}</p>}
             {loading && <p className="muted">Reading it back…</p>}
-            {kind === 'image' && <img src={url} alt={shownName} />}
-            {kind === 'video' && <video src={url} controls />}
-            {kind === 'audio' && <audio src={url} controls />}
-            {kind === 'pdf' && <iframe src={url} title={shownName} />}
+            {kind === 'image' && (
+              <img
+                src={url}
+                alt={shownName}
+                onLoad={() => setMediaReady(true)}
+                onError={() => setMediaReady(true)}
+              />
+            )}
+            {kind === 'video' && (
+              <video src={url} controls onLoadedData={() => setMediaReady(true)} onError={() => setMediaReady(true)} />
+            )}
+            {kind === 'audio' && (
+              <audio src={url} controls onLoadedData={() => setMediaReady(true)} onError={() => setMediaReady(true)} />
+            )}
+            {kind === 'pdf' && (
+              <iframe src={url} title={shownName} onLoad={() => setMediaReady(true)} />
+            )}
             {body !== null && (
               <pre className={kind === null ? 'hex' : undefined}>
                 {body}

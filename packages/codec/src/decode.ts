@@ -3,7 +3,7 @@ import { GROUP_FRAMES, RS_K } from './geometry.ts';
 import { unpack } from './container.ts';
 import { recoverGroup } from './ecc.ts';
 import { decodeFrame, sampleFrame } from './frame.ts';
-import { readFrames } from './ffmpeg.ts';
+import { probe, readFrames } from './ffmpeg.ts';
 
 export interface DecodeStats {
   framesRead: number;
@@ -18,14 +18,19 @@ export interface DecodeStats {
 export async function decodeVideo(
   videoPath: string,
   outputDir: string,
-  onProgress?: (frames: number) => void,
+  onProgress?: (frames: number, total: number | null) => void,
 ): Promise<DecodeStats> {
   const groups = new Map<number, (Buffer | null)[]>();
   const stats = { framesRead: 0, framesLost: 0, framesRepaired: 0, groupsRecovered: 0 };
 
+  // Asked once, before the read, so progress has a denominator. readFrames
+  // probes again for its dimensions; ffprobe on a local file is milliseconds
+  // against a decode measured in minutes.
+  const total = onProgress ? (await probe(videoPath)).frames : null;
+
   for await (const frame of readFrames(videoPath)) {
     stats.framesRead++;
-    onProgress?.(stats.framesRead);
+    onProgress?.(stats.framesRead, total);
 
     const decoded = decodeFrame(sampleFrame(frame.data, frame.width, frame.height));
     if (!decoded) {

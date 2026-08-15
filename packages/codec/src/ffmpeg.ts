@@ -57,11 +57,21 @@ export function openVideoSink(outPath: string, quiet = true): VideoSink {
   };
 }
 
-export async function probe(path: string): Promise<{ width: number; height: number }> {
+/**
+ * Dimensions, and the frame count when the container will admit to one.
+ *
+ * `nb_frames` is missing or `N/A` in plenty of streams — a remuxed download in
+ * particular — so duration is the fallback, and null is the honest answer when
+ * neither is there. A decoder that reports "frame 4000 of nothing" is still
+ * better than one that invents a denominator.
+ */
+export async function probe(
+  path: string,
+): Promise<{ width: number; height: number; frames: number | null }> {
   const proc = spawn('ffprobe', [
     '-v', 'error',
     '-select_streams', 'v:0',
-    '-show_entries', 'stream=width,height',
+    '-show_entries', 'stream=width,height,nb_frames,duration',
     '-of', 'csv=p=0',
     path,
   ]);
@@ -70,9 +80,20 @@ export async function probe(path: string): Promise<{ width: number; height: numb
   const [code] = (await once(proc, 'close')) as [number];
   if (code !== 0) throw new Error(`ffprobe failed on ${path}`);
 
-  const [width, height] = out.trim().split(',').map(Number);
+  const [rawWidth, rawHeight, rawFrames, rawDuration] = out.trim().split(',');
+  const width = Number(rawWidth);
+  const height = Number(rawHeight);
   if (!width || !height) throw new Error(`could not read dimensions from ${path}`);
-  return { width, height };
+
+  const counted = Number(rawFrames);
+  const seconds = Number(rawDuration);
+  const frames = Number.isFinite(counted) && counted > 0
+    ? counted
+    : Number.isFinite(seconds) && seconds > 0
+      ? Math.round(seconds * FPS)
+      : null;
+
+  return { width, height, frames };
 }
 
 /** Yields decoded grayscale frames at the video's native resolution. */
