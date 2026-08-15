@@ -54,8 +54,22 @@ FROM node:25-trixie-slim AS runtime
 # all — "Only images are available". The download then fails as
 # "Requested format is not available", which reads exactly like a video that
 # has not finished transcoding. That cost days.
+#
+# chromium, Xvfb, x11vnc and noVNC are the cookie capture. Every deployment
+# needs a cookie jar - a private video is only served to a signed-in browser
+# session - and getting one means signing in to Google by hand, in a browser.
+# A container has no screen and cannot reach the browser on your desk: it
+# cannot launch it, and on macOS it could not decrypt its cookies either, since
+# that key lives in the Keychain. So the image brings a browser, runs it on a
+# virtual display, and the API shows it in the page you are already signed in
+# to. That is what makes the last setup step a button here rather than a
+# command to run somewhere else.
+#
+# It is roughly half this image. The alternative was a step that cannot be
+# completed by the people who deploy this the documented way.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg python3 python3-pip ca-certificates tini \
+      chromium xvfb x11vnc novnc fonts-liberation \
     && pip3 install --break-system-packages --no-cache-dir yt-dlp yt-dlp-ejs \
     && rm -rf /var/lib/apt/lists/*
 

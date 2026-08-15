@@ -114,9 +114,11 @@ Open **`/setup`** in the app and it walks you through exactly these steps, check
 3. **Authorize it.** Step 3 sends you through the Google OAuth screen you just configured and brings you back to the wizard.
 4. **Give it cookies.** Every video uploaded through the app is private, and downloading a private video needs a logged-in session — a cookie jar, not just the OAuth token. Step 4 of the wizard is a button: it opens a brand-new, disposable browser profile, waits for you to log in to YouTube with that channel's account, grabs the session cookies, and throws the profile away. Nothing else ever touches that profile again, so nothing can silently invalidate the session behind the app's back.
 
-   The browser opens on the machine running the API, so the button is only offered when that machine has a screen and a Chromium-family browser (Brave, Chrome, Chromium, Edge, Vivaldi). It cannot be a private window, no matter the flags: private-window cookies live only in memory and are never written anywhere readable. A throwaway profile that gets deleted is what gives the same guarantee.
+   Where that browser runs depends on the server. In the container it is the one the image ships with: it runs on a virtual display and appears inside the page, keyboard and mouse included, so you sign in without leaving the app. Run natively, it opens Brave, Chrome, Chromium, Edge or Vivaldi on that machine instead. Either way it cannot be a private window, no matter the flags: private-window cookies live only in memory and are never written anywhere readable. A throwaway profile that gets deleted is what gives the same guarantee.
 
-   In a container there is neither browser nor screen, so the wizard prints a line to run where you are instead — same capture, talking back over HTTP, with the address and account already filled in:
+   Once the account is set up the same button lives on **Accounts**, one per account. That is where you will use it: a jar expires after a few weeks, the health badge turns `stale`, and re-taking one is the fix.
+
+   If the API runs somewhere with no browser at all, this line does the same capture from your machine and talks back over HTTP:
    ```bash
    YTS_API=http://localhost:3000 YTS_ACCOUNT=<account id> pnpm run cookies
    ```
@@ -255,9 +257,11 @@ Abre **`/setup`** en la app y te guía exactamente por estos pasos, marcando cad
 3. **Autorízala.** El paso 3 te lleva a través de la pantalla de OAuth de Google que acabas de configurar y te devuelve al asistente.
 4. **Dale las cookies.** Todo video subido por la app es privado, y descargar un video privado necesita una sesión iniciada — un frasco de cookies, no solo el token OAuth. El paso 4 del asistente es un botón: abre un perfil de navegador nuevo y desechable, espera a que inicies sesión en YouTube con la cuenta de ese canal, extrae las cookies de sesión y descarta el perfil. Nada más vuelve a tocar ese perfil, así que nada puede invalidar la sesión en silencio a espaldas de la app.
 
-   El navegador se abre en la máquina donde corre la API, así que el botón solo aparece cuando esa máquina tiene pantalla y un navegador de la familia Chromium (Brave, Chrome, Chromium, Edge, Vivaldi). No puede ser una ventana privada, con ninguna combinación de flags: las cookies de una ventana privada viven solo en memoria y nunca se escriben en ningún sitio legible. Un perfil desechable que luego se borra es lo que da la misma garantía.
+   Dónde corre ese navegador depende del servidor. En el contenedor es el que trae la imagen: corre en una pantalla virtual y aparece dentro de la página, con teclado y ratón, así que inicias sesión sin salir de la app. Si corres nativo, abre Brave, Chrome, Chromium, Edge o Vivaldi en esa máquina. En ninguno de los dos casos puede ser una ventana privada, con ninguna combinación de flags: las cookies de una ventana privada viven solo en memoria y nunca se escriben en ningún sitio legible. Un perfil desechable que luego se borra es lo que da la misma garantía.
 
-   En un contenedor no hay ni navegador ni pantalla, así que el asistente imprime una línea para ejecutar donde estés tú — la misma captura, hablando de vuelta por HTTP, con la dirección y la cuenta ya rellenadas:
+   Una vez configurada la cuenta, el mismo botón vive en **Accounts**, uno por cuenta. Ahí es donde lo vas a usar: un frasco caduca a las pocas semanas, la insignia de salud pasa a `stale`, y volver a capturarlo es el arreglo.
+
+   Si la API corre en un sitio sin navegador alguno, esta línea hace la misma captura desde tu máquina y habla de vuelta por HTTP:
    ```bash
    YTS_API=http://localhost:3000 YTS_ACCOUNT=<id de la cuenta> pnpm run cookies
    ```

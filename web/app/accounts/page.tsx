@@ -7,6 +7,7 @@ import { api, ApiError, formatWhen } from '@/lib/api';
 import type { Account, CookieCapture, Status } from '@/lib/api';
 import { useSession } from '@/lib/use-session';
 import { useCookieCapture } from '@/lib/use-capture';
+import { RemoteBrowser } from '@/app/remote-browser';
 
 const HEALTH_TONE = { OK: 'ok', STALE: 'bad', MISSING: 'busy' } as const;
 
@@ -18,41 +19,47 @@ const HEALTH_TONE = { OK: 'ok', STALE: 'bad', MISSING: 'busy' } as const;
  * in the row above is the app noticing — so this is the button that keeps an
  * account working, not just the one that sets it up.
  */
-function CaptureCookies({
+function CapturePanel({
   account,
-  capture,
   onDone,
+  onClose,
 }: {
   account: Account;
-  capture: CookieCapture;
   onDone: () => Promise<void>;
+  onClose: () => void;
 }) {
-  const { progress, running, starting, error, start, cancel } = useCookieCapture(account.id, onDone);
-
-  if (running) {
-    return (
-      <>
-        <button onClick={() => void cancel()}>Cancel capture</button>
-        <span className="small muted" title={progress?.message}>
-          {progress?.state === 'WAITING_FOR_LOGIN'
-            ? `sign in to ${progress.browserName}…`
-            : 'capturing…'}
-        </span>
-      </>
-    );
-  }
+  const { progress, running, error, cancel } = useCookieCapture(account.id, onDone, true);
+  const failed = progress?.state === 'FAILED';
 
   return (
-    <>
-      <button onClick={() => void start()} disabled={starting}>
-        {starting ? 'Opening…' : `Capture in ${capture.browserName}`}
-      </button>
-      {(error || progress?.state === 'FAILED') && (
-        <span className="small" style={{ color: 'var(--bad)' }}>
-          {error ?? progress?.message}
-        </span>
-      )}
-    </>
+    <section className="panel">
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <h2 style={{ margin: 0 }}>Capturing cookies for {account.label}</h2>
+        <div className="row">
+          {running && <button onClick={() => void cancel()}>Cancel</button>}
+          {!running && <button onClick={onClose}>Close</button>}
+        </div>
+      </div>
+
+      <p
+        className="small"
+        style={{
+          color: failed || error ? 'var(--bad)' : progress?.state === 'DONE' ? 'var(--ok)' : undefined,
+        }}
+      >
+        {error ?? progress?.message ?? 'Starting…'}
+        {progress?.state === 'WAITING_FOR_LOGIN' && typeof progress.secondsLeft === 'number' && (
+          <span className="muted"> ({Math.ceil(progress.secondsLeft / 60)} min left)</span>
+        )}
+      </p>
+
+      {progress?.viewUrl && <RemoteBrowser url={progress.viewUrl} />}
+
+      <p className="small muted">
+        Sign in with the Google account behind this channel. Do not sign out afterwards — that ends
+        the session on Google&apos;s side and the jar with it.
+      </p>
+    </section>
   );
 }
 
@@ -80,6 +87,9 @@ function Accounts() {
   // so re-capturing it belongs here rather than only in the wizard — the wizard
   // hides a step it considers done, which is every day but the first.
   const [capture, setCapture] = useState<CookieCapture | null>(null);
+  // The capture opens a panel above the table rather than living in a row: it
+  // carries a whole browser window when the server runs its own.
+  const [capturing, setCapturing] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -187,11 +197,13 @@ function Accounts() {
           <p className="small muted">
             {capture?.available ? (
               <>
-                The safe way to produce one is <strong>Capture in {capture.browserName}</strong> below: it
-                opens a brand new, empty browser profile on this server, waits for you to sign in to YouTube,
-                takes the jar and deletes the profile. Nothing ever opens that profile again, which is the
-                point — Google rotates session cookies on use, so a jar shared with a browser you keep using
-                is invalidated within minutes.
+                The safe way to produce one is <strong>Capture cookies</strong> below.{' '}
+                {capture.mode === 'remote'
+                  ? 'This server runs its own browser and shows it to you here; you sign in to YouTube in it.'
+                  : `It opens ${capture.browserName} on the machine running this server and waits for you to sign in.`}{' '}
+                Either way the profile is brand new and is deleted once the jar is out. Nothing ever opens it
+                again, which is the point — Google rotates session cookies on use, so a jar shared with a
+                browser you keep using is invalidated within minutes.
               </>
             ) : (
               <>
@@ -211,6 +223,14 @@ function Accounts() {
           </p>
         </section>
       </div>
+
+      {capturing && accounts?.some((account) => account.id === capturing) && (
+        <CapturePanel
+          account={accounts.find((account) => account.id === capturing)!}
+          onDone={refresh}
+          onClose={() => setCapturing(null)}
+        />
+      )}
 
       <section className="panel">
         {accounts === null ? (
@@ -268,7 +288,7 @@ function Accounts() {
                         {account.connected ? 'Re-authorise' : 'Connect'}
                       </a>
                       {capture?.available && (
-                        <CaptureCookies account={account} capture={capture} onDone={refresh} />
+                        <button onClick={() => setCapturing(account.id)}>Capture cookies</button>
                       )}
                       <button onClick={() => cookieInputs.current[account.id]?.click()}>Upload cookies</button>
                       <input

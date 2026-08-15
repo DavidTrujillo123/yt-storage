@@ -19,12 +19,24 @@
  * the button, and `scripts/get-cookies.mjs` remains the answer when it says no.
  */
 import { Logger } from '@nestjs/common';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { homedir, platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hasSessionCookie } from './cookie-jar';
+import { remoteAvailable, startRemoteBrowser } from './remote-browser';
+import { VNC_PATH } from './vnc-proxy';
+
+/** Where the browser lands, whichever machine it is running on. */
+const SIGN_IN_URL = 'https://accounts.google.com/ServiceLogin?service=youtube';
+
+/**
+ * noVNC's own page, pointed at the proxy. `resize=scale` is what makes a
+ * 1280x800 desktop fit a panel in a wizard step; `reconnect` covers the moment
+ * the display is still coming up when the iframe loads.
+ */
+const VIEW_URL = `/vnc/vnc.html?autoconnect=1&resize=scale&reconnect=1&path=${VNC_PATH.replace(/^\//, '')}`;
 
 /** How long someone gets to complete a Google sign-in before we give up. */
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
@@ -189,8 +201,16 @@ function headless(): boolean {
   return platform() === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
 }
 
+/**
+ * `local` opens a browser on this machine — a native run, where that machine is
+ * also yours. `remote` runs the browser the image ships with and shows it in
+ * the page, which is the only one of the two a container can do.
+ */
+export type CaptureMode = 'local' | 'remote';
+
 export interface CaptureCapability {
   available: boolean;
+  mode: CaptureMode | null;
   /** Our key for the browser that would be launched, e.g. `brave`. */
   browser: string | null;
   /** What a person calls it. */
@@ -221,17 +241,34 @@ export function captureCapability(): CaptureCapability {
 function probeCapability(): CaptureCapability {
   const none = (reason: string): CaptureCapability => ({
     available: false,
+    mode: null,
     browser: null,
     browserName: null,
     isDefault: false,
     reason,
   });
 
+  if (!haveYtDlp()) return none('yt-dlp is not installed on the machine running this API');
+
+  // The bundled browser first whenever it is there. In a container it is the
+  // only one that can work, and an image that ships it was built to use it.
+  if (remoteAvailable()) {
+    return {
+      available: true,
+      mode: 'remote',
+      browser: 'chromium',
+      browserName: 'Chromium',
+      isDefault: false,
+      reason: null,
+    };
+  }
+
   if (inContainer()) {
-    return none('this API runs in a container, which has no browser and no screen');
+    return none(
+      'this API runs in a container built without the bundled browser, so it has nothing to open',
+    );
   }
   if (headless()) return none('this machine has no graphical session to open a browser in');
-  if (!haveYtDlp()) return none('yt-dlp is not installed on the machine running this API');
 
   const installed = installedBrowsers();
   if (installed.length === 0) {
@@ -243,6 +280,7 @@ function probeCapability(): CaptureCapability {
 
   return {
     available: true,
+    mode: 'local',
     browser,
     browserName: BROWSERS[browser].name,
     isDefault: browser === preferred,
@@ -261,11 +299,18 @@ export type CaptureState =
 export interface CaptureProgress {
   accountId: string;
   state: CaptureState;
+  mode: CaptureMode;
   browserName: string;
   /** One sentence describing where this is, safe to render as-is. */
   message: string;
   /** Seconds left before the sign-in wait gives up; null once it is over. */
   secondsLeft: number | null;
+  /**
+   * Where to embed the browser, in remote mode and only while it is up. Same
+   * origin, so the session cookie rides along and the socket behind it is
+   * checked like any other request.
+   */
+  viewUrl: string | null;
   result: { kept: number; dropped: number; domains: string[] } | null;
 }
 
@@ -321,9 +366,14 @@ export class BrowserCapture {
     const progress: CaptureProgress = {
       accountId,
       state: 'LAUNCHING',
+      mode: capability.mode!,
       browserName: capability.browserName!,
-      message: `Opening ${capability.browserName} with a new, empty profile…`,
+      message:
+        capability.mode === 'remote'
+          ? 'Starting the browser inside this server…'
+          : `Opening ${capability.browserName} with a new, empty profile…`,
       secondsLeft: LOGIN_TIMEOUT_MS / 1000,
+      viewUrl: null,
       result: null,
     };
     this.current = progress;
@@ -342,34 +392,47 @@ export class BrowserCapture {
     progress: CaptureProgress,
     store: (jar: Buffer) => Promise<{ kept: number; dropped: number; domains: string[] }>,
   ): Promise<void> {
-    const binary = resolveBinary(browser)!;
     const profileDir = await mkdtemp(join(tmpdir(), 'yts-profile-'));
     const jarPath = join(profileDir, 'jar.txt');
 
     let cancelled = false;
-    const child = spawn(
-      binary,
-      [
-        `--user-data-dir=${profileDir}`,
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--new-window',
-        'https://accounts.google.com/ServiceLogin?service=youtube',
-      ],
-      { detached: true, stdio: 'ignore' },
-    );
-    child.unref();
+    let child: ChildProcess;
+    let teardown: () => void;
+
+    if (progress.mode === 'remote') {
+      const remote = await startRemoteBrowser(profileDir, SIGN_IN_URL, this.log);
+      child = remote.browser;
+      teardown = remote.stop;
+      progress.viewUrl = VIEW_URL;
+    } else {
+      child = spawn(
+        resolveBinary(browser)!,
+        [
+          `--user-data-dir=${profileDir}`,
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--new-window',
+          SIGN_IN_URL,
+        ],
+        { detached: true, stdio: 'ignore' },
+      );
+      child.unref();
+      teardown = () => child.kill('SIGKILL');
+    }
 
     this.cancel = () => {
       cancelled = true;
-      child.kill('SIGKILL');
+      teardown();
     };
 
     try {
       progress.state = 'WAITING_FOR_LOGIN';
       progress.message =
-        `Sign in to YouTube in the ${progress.browserName} window that just opened. ` +
-        'Leave it open, and do not sign out afterwards — that would end the session server-side.';
+        progress.mode === 'remote'
+          ? 'Sign in to YouTube in the browser below. Do not sign out afterwards — that would end ' +
+            'the session server-side.'
+          : `Sign in to YouTube in the ${progress.browserName} window that just opened. ` +
+            'Leave it open, and do not sign out afterwards — that would end the session server-side.';
 
       const deadline = Date.now() + LOGIN_TIMEOUT_MS;
       let signedIn = false;
@@ -383,6 +446,10 @@ export class BrowserCapture {
           break;
         }
       }
+
+      // The wait is over one way or another, so the browser is about to go and
+      // the embedded view with it.
+      progress.viewUrl = null;
 
       if (cancelled) {
         progress.state = 'CANCELLED';
@@ -422,11 +489,14 @@ export class BrowserCapture {
     } catch (error) {
       progress.state = 'FAILED';
       progress.secondsLeft = null;
+      progress.viewUrl = null;
       progress.message = (error as Error).message;
       this.log.warn(`cookie capture failed: ${(error as Error).message}`);
     } finally {
       this.cancel = null;
-      child.kill('SIGKILL');
+      // In remote mode this takes down the X display and the VNC server too,
+      // not just the browser.
+      teardown();
       // The profile holds a live Google session in plaintext-adjacent form.
       // It goes whether this worked or not.
       await rm(profileDir, { recursive: true, force: true });

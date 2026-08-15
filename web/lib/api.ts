@@ -91,6 +91,12 @@ export interface Bootstrap {
  */
 export interface CookieCapture {
   available: boolean;
+  /**
+   * `local` opens a browser on the machine running the API, which is yours only
+   * when the API runs natively. `remote` runs the browser the server ships with
+   * and shows it in this page — the only one a container can do.
+   */
+  mode: 'local' | 'remote' | null;
   browser: string | null;
   browserName: string | null;
   isDefault: boolean;
@@ -108,9 +114,12 @@ export type CaptureState =
 
 export interface CaptureProgress {
   state: CaptureState;
+  mode?: 'local' | 'remote';
   browserName?: string;
   message?: string;
   secondsLeft?: number | null;
+  /** Set while the server's own browser is up: where to embed it. */
+  viewUrl?: string | null;
   result?: { kept: number; dropped: number; domains: string[] } | null;
 }
 

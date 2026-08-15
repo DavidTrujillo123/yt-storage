@@ -7,6 +7,7 @@ import { api, ApiError } from '@/lib/api';
 import type { Account, Bootstrap, CookieCapture, Status } from '@/lib/api';
 import { useSession } from '@/lib/use-session';
 import { useCookieCapture } from '@/lib/use-capture';
+import { RemoteBrowser } from '@/app/remote-browser';
 
 /** useSearchParams needs a boundary; the OAuth callback returns with ?connected=1. */
 export default function SetupPage() {
@@ -497,16 +498,28 @@ function CaptureButton({
     if (error) onError(error);
   }, [error, onError]);
 
+  const remote = capture.mode === 'remote';
+
   return (
     <>
       <h3 style={{ marginBottom: '0.35rem' }}>Sign in and let this take the jar</h3>
       <p className="small muted">
-        Opens {capture.browserName} on the machine running this server, with a brand new, empty
-        profile. Sign in to the account behind <strong>{account.label}</strong>, and the profile is
-        deleted the moment its cookies are out — nothing ever opens it again, which is the point.
-        Google rotates session cookies on use, so a jar shared with a browser you keep using is
-        invalidated within minutes.
-        {!capture.isDefault && (
+        {remote ? (
+          <>
+            This server runs its own {capture.browserName} on a screen it keeps to itself, and shows
+            it here. Sign in to the account behind <strong>{account.label}</strong> in the panel that
+            appears, exactly as you would in any browser.
+          </>
+        ) : (
+          <>
+            Opens {capture.browserName} on the machine running this server, with a brand new, empty
+            profile. Sign in to the account behind <strong>{account.label}</strong>.
+          </>
+        )}{' '}
+        The profile is deleted the moment its cookies are out — nothing ever opens it again, which is
+        the point. Google rotates session cookies on use, so a jar shared with a browser you keep
+        using is invalidated within minutes.
+        {!remote && !capture.isDefault && (
           <>
             {' '}
             Your default browser cannot be driven this way — only Chromium-family ones can — so{' '}
@@ -517,10 +530,18 @@ function CaptureButton({
 
       <div className="row">
         <button className="primary" onClick={() => void start()} disabled={starting || running}>
-          {running ? 'Waiting…' : starting ? 'Starting…' : `Open ${capture.browserName} and sign in`}
+          {running
+            ? 'Waiting…'
+            : starting
+              ? 'Starting…'
+              : remote
+                ? 'Open a browser and sign in'
+                : `Open ${capture.browserName} and sign in`}
         </button>
         {running && <button onClick={() => void cancel()}>Cancel</button>}
       </div>
+
+      {progress?.viewUrl && <RemoteBrowser url={progress.viewUrl} />}
 
       {progress && progress.state !== 'IDLE' && (
         <p

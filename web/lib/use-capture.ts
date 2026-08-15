@@ -23,19 +23,52 @@ const RUNNING: CaptureState[] = ['LAUNCHING', 'WAITING_FOR_LOGIN', 'CAPTURING'];
  * machinery behind very different surfaces — a whole explanatory step in the
  * wizard, one button in a table row on the accounts page.
  */
-export function useCookieCapture(accountId: string, onDone: () => Promise<void> | void) {
+export function useCookieCapture(
+  accountId: string,
+  onDone: () => Promise<void> | void,
+  /**
+   * Starts one as soon as this mounts — for a panel that only exists because
+   * someone just asked for a capture, where a second button to press would be
+   * a step with no decision in it.
+   */
+  autoStart = false,
+) {
   const [progress, setProgress] = useState<CaptureProgress | null>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const running = progress !== null && RUNNING.includes(progress.state);
 
-  // Adopt a capture that outlived the page rather than compete with it.
+  const start = useCallback(async () => {
+    setStarting(true);
+    setError(null);
+    try {
+      setProgress(
+        await api<CaptureProgress>(`/accounts/${accountId}/cookies/capture`, { method: 'POST' }),
+      );
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setStarting(false);
+    }
+  }, [accountId]);
+
+  // Adopt a capture that outlived the page rather than compete with it. Only
+  // once that answer is in can autoStart know whether there is anything to
+  // start; starting first would collide with the capture already running.
   useEffect(() => {
+    let live = true;
     void api<CaptureProgress>(`/accounts/${accountId}/cookies/capture`)
       .then((current) => {
+        if (!live) return;
         if (current.state !== 'IDLE') setProgress(current);
+        else if (autoStart) void start();
       })
       .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+    // start is stable for an accountId, and autoStart is a mount-time decision.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId]);
 
   useEffect(() => {
@@ -60,20 +93,6 @@ export function useCookieCapture(accountId: string, onDone: () => Promise<void> 
       clearInterval(timer);
     };
   }, [running, accountId, onDone]);
-
-  const start = useCallback(async () => {
-    setStarting(true);
-    setError(null);
-    try {
-      setProgress(
-        await api<CaptureProgress>(`/accounts/${accountId}/cookies/capture`, { method: 'POST' }),
-      );
-    } catch (failure) {
-      setError((failure as Error).message);
-    } finally {
-      setStarting(false);
-    }
-  }, [accountId]);
 
   const cancel = useCallback(async () => {
     try {

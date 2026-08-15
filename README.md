@@ -246,15 +246,27 @@ API so you can leave and return. What it does, spelled out:
    - close the private window **without logging out** — logging out kills the
      session server-side and the exported jar dies with it
 
-   Or skip the extension entirely. When the API runs natively on a machine with
-   a screen and a Chromium-family browser, `/setup` step 4 does the whole thing
-   from a button: it opens that browser against a brand new throwaway profile,
-   waits for you to sign in, stores the jar and deletes the profile. `/status`
-   reports `cookieCapture.available` so the page knows whether to offer it, and
-   `cookieCapture.reason` says why not when it cannot — a container has no
-   browser and no screen.
+   Or press the button. **Capture cookies** on `/accounts`, and step 4 of
+   `/setup`, do the whole thing: a brand new throwaway profile, a sign-in, the
+   jar stored, the profile deleted. Two ways, picked by what the server has:
 
-   For those cases the same capture runs where you are instead:
+   - **In the container.** The image ships chromium, Xvfb, x11vnc and noVNC.
+     The browser runs on a virtual display and appears in the page, with your
+     keyboard and mouse going to it. x11vnc listens on loopback only and is
+     reachable exclusively through `/api/vnc`, which upgrades to a WebSocket
+     only for a signed-in session — unauthenticated upgrades get a 401 before
+     the RFB handshake starts. It is a real browser receiving real X input
+     rather than one driven by automation, which is what Google's sign-in
+     requires; a headless automated browser is refused with "this browser or
+     app may not be secure". This is why the runtime image is about 2GB.
+   - **Natively.** No virtual display needed: it opens Brave, Chrome, Chromium,
+     Edge or Vivaldi on that machine, preferring whichever handles https.
+
+   `/status` reports which under `cookieCapture.mode`, or `available: false`
+   with a `reason` when the server can do neither.
+
+   The same capture also runs from your own machine, which is what to use when
+   the API is somewhere without either:
 
    ```bash
    pnpm run cookies
@@ -344,6 +356,7 @@ redirect URI, which keeps its address.
 | `GET /accounts/:id/connect?return=setup` | start OAuth for that account |
 | `POST /accounts/:id/cookies` | store its cookie jar |
 | `POST/GET/DELETE /accounts/:id/cookies/capture` | drive a throwaway browser profile here: start, poll, cancel |
+| `GET /api/vnc` (WebSocket) | the container's browser, for a signed-in viewer only |
 | `POST /accounts/:id/cookies/from-browser` | read a local browser profile (see the warning above) |
 | `POST /files` | multipart upload; several parts become one archive |
 | `GET /files` | your catalogue with status and progress |
