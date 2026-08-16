@@ -24,8 +24,14 @@ const MAX_FILES = 500;
  * Not a server limit but a real one: the codec reads the whole file into
  * memory and keeps a few copies of it while encoding, so a multi-gigabyte
  * upload is accepted and then dies in the worker.
+ *
+ * Measured rather than guessed: packing a 400MB file peaks around 1.7GB, so
+ * the ceiling is where four or five copies still fit in the memory a worker
+ * container is given. It used to be 512MB, which was not the encoder's limit
+ * at all — it was the browser's, back when every upload was read into the tab
+ * twice before the request started. That is gone, so this is now the only cap.
  */
-const MAX_TOTAL_BYTES = 512 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 
 /** What the row is actually waiting on, in words rather than a state name. */
 function explain(file: StoredFile): string {
@@ -97,7 +103,7 @@ export default function FilesPage() {
     }
     if (total > MAX_TOTAL_BYTES) {
       setError(
-        `${formatBytes(total)} in one upload. The encoder holds the whole file in memory, so keep it under ${formatBytes(MAX_TOTAL_BYTES)}.`,
+        `${formatBytes(total)} in one upload. The encoder holds the whole file in memory while it works, so keep it under ${formatBytes(MAX_TOTAL_BYTES)}.`,
       );
       return;
     }

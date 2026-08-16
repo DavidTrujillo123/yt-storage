@@ -216,8 +216,11 @@ export function entryUrl(id: string, index: number, inline = false): string {
  * upload counts as one whatever it weighs — a hundred a day, total. Sending a
  * folder file by file would spend the whole day's budget on a hundred photos.
  */
+/** Enough of a file to prove the browser can still read its bytes. */
+const PROBE_BYTES = 64 * 1024;
+
 /**
- * Reads every file into memory before a byte is sent.
+ * Proves each file is readable before a byte is sent, without holding it.
  *
  * Handing a `File` straight to XHR does not copy anything: the browser keeps a
  * reference and reads from disk *while* uploading. If that read fails part way
@@ -227,20 +230,24 @@ export function entryUrl(id: string, index: number, inline = false): string {
  * Chrome and Brave call it `net::ERR_UPLOAD_FILE_CHANGED`. The server sees
  * nothing at all, which makes it look like the app is broken.
  *
- * Reading first turns that into a plain error naming the file, and the upload
- * then streams from memory where nothing can change underneath it. The cost is
- * holding the selection in the tab, which is why the UI caps a bundle well
- * below what a browser can hold.
+ * This used to be answered by reading every file into memory first, which
+ * turned that into a plain error but held the whole selection in the tab —
+ * twice over, since `new File([bytes])` copies again. A 400MB upload therefore
+ * needed the better part of a gigabyte of tab before the request even started,
+ * and the browser killed it while the server sat idle with nothing in its log.
+ *
+ * A slice of each end costs a few kilobytes and catches the same cases: an
+ * iCloud placeholder and a file that has been moved both fail on any read at
+ * all. What it cannot catch is a file edited mid-upload; that still arrives as
+ * a dropped request, which is what the network handler below explains.
  */
-async function readAll(files: File[], onProgress: (percent: number) => void): Promise<File[]> {
-  const total = files.reduce((sum, file) => sum + file.size, 0) || 1;
-  const loaded: File[] = [];
-  let done = 0;
-
+async function ensureReadable(files: File[]): Promise<void> {
   for (const file of files) {
-    let bytes: ArrayBuffer;
     try {
-      bytes = await file.arrayBuffer();
+      const head = await file.slice(0, Math.min(PROBE_BYTES, file.size)).arrayBuffer();
+      // The last byte too: a placeholder can serve a cached head and nothing else.
+      if (file.size > PROBE_BYTES) await file.slice(file.size - 1).arrayBuffer();
+      if (file.size > 0 && head.byteLength === 0) throw new Error('read nothing');
     } catch {
       throw new ApiError(
         0,
@@ -248,31 +255,16 @@ async function readAll(files: File[], onProgress: (percent: number) => void): Pr
           'or it is in iCloud and not downloaded to this Mac — open it once in Finder to fetch it, then try again.',
       );
     }
-
-    if (bytes.byteLength !== file.size) {
-      throw new ApiError(
-        0,
-        `"${file.name}" changed while it was being read (${bytes.byteLength} bytes, expected ${file.size})`,
-      );
-    }
-
-    loaded.push(new File([bytes], file.name, { type: file.type }));
-    done += file.size;
-    // The read is real work for a large selection; report it as progress
-    // rather than leaving the button dead.
-    onProgress(Math.round((done / total) * 50));
   }
-
-  return loaded;
 }
 
 export async function uploadFiles(
   original: File[],
   onProgress: (percent: number) => void,
 ): Promise<StoredFile> {
-  // Paths live on the original handles; the in-memory copies keep only names.
   const paths = original.map((file) => file.webkitRelativePath || file.name);
-  const files = await readAll(original, onProgress);
+  await ensureReadable(original);
+  const files = original;
 
   return new Promise((resolve, reject) => {
     const body = new FormData();
@@ -293,8 +285,8 @@ export async function uploadFiles(
       // Kept so a failure can say how far it got. "Nothing left the browser"
       // and "it died at 90%" are different bugs in different places.
       sent = event.loaded;
-      // The first half of the bar was the read; this is the second half.
-      if (event.lengthComputable) onProgress(50 + Math.round((event.loaded / event.total) * 50));
+      // The whole bar is the upload now: nothing is read up front to report.
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
     });
 
     // Every path out of here settles the promise. An earlier version parsed
@@ -333,7 +325,7 @@ export async function uploadFiles(
           0,
           sent === 0
             ? `the request never left the browser — 0 of ${formatBytes(total)} was sent. Nothing reached the server, so this is the browser refusing to read or send the files.`
-            : `the connection dropped after ${formatBytes(sent)} of ${formatBytes(total)}`,
+            : `the connection dropped after ${formatBytes(sent)} of ${formatBytes(total)}. The browser reads the file from disk as it uploads, so a file edited, moved or synced away mid-upload ends here.`,
         ),
       ),
     );
