@@ -41,7 +41,8 @@ export class EncodeProcessor extends WorkerHost {
       this.log.log(
         // size is only ever null on a row imported from the channel, which has
         // no local bytes and therefore never reaches an encode.
-        `${file.name}: ${result.frames} frames, ${(result.videoBytes / (file.size ?? 0)).toFixed(1)}x bloat`,
+        `${file.name}: ${result.layout} layout, ${result.frames} frames, ` +
+          `${(result.videoBytes / (file.size ?? 0)).toFixed(1)}x bloat`,
       );
       await this.uploadQueue.add('upload', { fileId: file.id }, { jobId: file.id });
     } catch (error) {

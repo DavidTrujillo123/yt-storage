@@ -9,6 +9,8 @@ export interface EncodeResult {
   streamBytes: number;
   originalBytes: number;
   videoBytes: number;
+  /** Which grid wrote it. The decoder detects this itself; the log says it. */
+  layout: string;
 }
 
 export interface DecodeResult {
@@ -19,6 +21,7 @@ export interface DecodeResult {
   name: string;
   bytes: number;
   sha256: string;
+  layout: string;
 }
 
 /**

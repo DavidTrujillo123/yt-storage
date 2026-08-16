@@ -181,9 +181,11 @@ export class YtdlpService {
             '--force-overwrites',
             // YouTube serves these as DASH fragments, which yt-dlp fetches one
             // at a time by default — a single stream on a link that has room
-            // for several. Four is where the gain flattens out and stays well
-            // inside what one video's CDN will serve without throttling.
-            '--concurrent-fragments', '4',
+            // for several. Eight is still well inside what one video's CDN
+            // serves without throttling, and a restore moves gigabytes: the
+            // download is the half of it that no amount of decoding speed
+            // touches.
+            '--concurrent-fragments', '8',
             // One progress line per update instead of a carriage-returned bar,
             // and only the two numbers this needs. `total_bytes` is absent
             // until the download starts and stays NA for some fragmented
