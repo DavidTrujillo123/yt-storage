@@ -1,0 +1,119 @@
+/**
+ * How many bytes a frame carries, and what that costs.
+ *
+ * Everything here follows from one number: how many pixels wide a bit is drawn.
+ * A smaller block fits more bits on the same 1080p canvas — four times as many
+ * at 2 pixels as at 4 — which makes the video that many times shorter for the
+ * same file, and the encode that many times cheaper, because it is frames that
+ * cost and not seconds.
+ *
+ * What it spends is margin, and less of it than it looks. Both grids need the
+ * same thing back from YouTube — a 1080p rendition — because what a block has
+ * to survive is the re-encode, not the scaling: at 1080p a 2-pixel block is
+ * two whole pixels of its own. Measured on a VP9 transcode at crf 36, harsher
+ * than the crf 32 YouTube is estimated at: the dense grid recovers
+ * byte-identical data at 1080p and fails at 972p, and the wide one recovers at
+ * 900p and fails at 810p.
+ *
+ * Three-pixel blocks are missing on purpose. They upscale to 6-pixel squares,
+ * which do not line up with the 8x8 grid x264 works in, and the master comes
+ * out 33x the size of the file instead of 4.5x.
+ */
+import { HEADER_BITS, HEIGHT, RS_K, WIDTH } from './geometry.ts';
+
+export type LayoutId = 'dense' | 'wide';
+
+export interface Layout {
+  /** Stored per file, so a video written by an older version still reads. */
+  id: LayoutId;
+  block: number;
+  gridW: number;
+  gridH: number;
+  innerW: number;
+  innerH: number;
+  innerBits: number;
+  /** Payload bytes per frame. */
+  shardBytes: number;
+  /** Payload bytes per Reed-Solomon group. */
+  groupBytes: number;
+  /** x264 quality for the master upload. */
+  crf: string;
+  /**
+   * Served height below which this layout cannot be sampled at all. Measured
+   * per grid rather than derived: what breaks is where block edges stop
+   * landing on pixel edges, and that is not a clean function of block size.
+   */
+  minHeight: number;
+}
+
+function layoutFor(id: LayoutId, block: number, crf: string, minHeight: number): Layout {
+  const gridW = WIDTH / block;
+  const gridH = HEIGHT / block;
+  const innerW = gridW - 2;
+  const innerH = gridH - 2;
+  const innerBits = innerW * innerH;
+  // Floored to a multiple of 8 because @ronomon/reed-solomon requires shard
+  // sizes divisible by 8.
+  const shardBytes = Math.floor((innerBits - HEADER_BITS) / 8 / 8) * 8;
+
+  return {
+    id,
+    block,
+    gridW,
+    gridH,
+    innerW,
+    innerH,
+    innerBits,
+    shardBytes,
+    groupBytes: RS_K * shardBytes,
+    crf,
+    minHeight,
+  };
+}
+
+/**
+ * 2-pixel blocks: 64408 bytes a frame, 1.47 MiB of payload per second of video.
+ *
+ * Four times the wide grid, so a video a quarter as long and an encode a
+ * quarter the frames — measured at 3.2x faster for the same file.
+ *
+ * Written at crf 26 rather than the 10 a 4-pixel block uses. The finer pattern
+ * costs x264 more bits at any quality, and there is margin to buy them back:
+ * 26 is the quality where the master comes out no larger than the wide grid's
+ * for the same file — smaller, measured — while still recovering byte-identical
+ * data from a simulated transcode ten crf steps past what YouTube is estimated
+ * to apply. It first drops frames at crf 48, and stays inside the parity budget
+ * even there.
+ */
+export const DENSE: Layout = layoutFor('dense', 2, '26', 1080);
+
+/** 4-pixel blocks: 15992 bytes a frame. Every video written before this existed. */
+export const WIDE: Layout = layoutFor('wide', 4, '10', 1080);
+
+/**
+ * Candidates a decoder tries, densest first.
+ *
+ * Nothing in a frame announces which layout wrote it — the header is drawn
+ * inside the pattern, so reading it already needs the answer. The decoder
+ * finds out by parsing instead: a 4-byte magic and a CRC over the whole frame
+ * do not accept the wrong grid.
+ */
+export const LAYOUTS: Layout[] = [DENSE, WIDE];
+
+export const DEFAULT_LAYOUT = DENSE;
+
+/** The layout a stored id names, falling back to the one videos used to use. */
+export function layoutById(id: string | null | undefined): Layout {
+  return LAYOUTS.find((layout) => layout.id === id) ?? WIDE;
+}
+
+/**
+ * The layout to write with.
+ *
+ * Overridable, because the choice is a trade an instance is allowed to refuse:
+ * `CODEC_LAYOUT=wide` keeps every video readable from a 1080p rendition, at
+ * four times the video length and four times the encoding.
+ */
+export function encodingLayout(): Layout {
+  return layoutById(process.env.CODEC_LAYOUT ?? DEFAULT_LAYOUT.id);
+}

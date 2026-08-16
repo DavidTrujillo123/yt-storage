@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { FPS, HEIGHT, UPSCALE_H, UPSCALE_W, WIDTH } from './geometry.ts';
+import { FPS, HEIGHT, MIN_PIXELS_PER_BLOCK, UPSCALE_H, UPSCALE_W, WIDTH } from './geometry.ts';
+import type { Layout } from './layout.ts';
 
 /**
  * Frames are piped to ffmpeg as raw grayscale and upscaled nearest-neighbour on
@@ -13,7 +14,7 @@ export interface VideoSink {
   close(): Promise<void>;
 }
 
-export function openVideoSink(outPath: string, quiet = true): VideoSink {
+export function openVideoSink(outPath: string, layout: Layout, quiet = true): VideoSink {
   const args = [
     '-y',
     '-f', 'rawvideo',
@@ -34,7 +35,9 @@ export function openVideoSink(outPath: string, quiet = true): VideoSink {
     '-b:a', '8k',
     '-vf', `scale=${UPSCALE_W}:${UPSCALE_H}:flags=neighbor,format=yuv420p`,
     '-c:v', 'libx264',
-    '-crf', '10',
+    // Per layout: a finer grid costs x264 more bits at the same quality, and
+    // has the margin at 2160p to give some of them back.
+    '-crf', layout.crf,
     '-preset', 'veryfast',
     '-g', '30',
     '-movflags', '+faststart',
@@ -72,7 +75,12 @@ export async function probe(
     '-v', 'error',
     '-select_streams', 'v:0',
     '-show_entries', 'stream=width,height,nb_frames,duration',
-    '-of', 'csv=p=0',
+    // Named fields, not positional ones. `csv=p=0` omits what a stream does
+    // not carry instead of leaving a hole, so a video with no `nb_frames` —
+    // every remuxed download — handed its duration to whoever read the third
+    // column, and a 28 second video reported 28 frames to a progress bar
+    // expecting 840.
+    '-of', 'default=noprint_wrappers=1',
     path,
   ]);
   let out = '';
@@ -80,7 +88,16 @@ export async function probe(
   const [code] = (await once(proc, 'close')) as [number];
   if (code !== 0) throw new Error(`ffprobe failed on ${path}`);
 
-  const [rawWidth, rawHeight, rawFrames, rawDuration] = out.trim().split(',');
+  const fields = new Map<string, string>();
+  for (const line of out.trim().split('\n')) {
+    const at = line.indexOf('=');
+    if (at > 0) fields.set(line.slice(0, at), line.slice(at + 1));
+  }
+
+  const rawWidth = fields.get('width');
+  const rawHeight = fields.get('height');
+  const rawFrames = fields.get('nb_frames');
+  const rawDuration = fields.get('duration');
   const width = Number(rawWidth);
   const height = Number(rawHeight);
   if (!width || !height) throw new Error(`could not read dimensions from ${path}`);
@@ -96,27 +113,78 @@ export async function probe(
   return { width, height, frames };
 }
 
-/** Yields decoded grayscale frames at the video's native resolution. */
-export async function* readFrames(
+export interface RawFrames {
+  width: number;
+  height: number;
+  frameSize: number;
+  /** Raw grayscale bytes, in whatever sized pieces the pipe delivers them. */
+  chunks: AsyncIterable<Buffer>;
+  /** Stops ffmpeg for a reader that is giving up before the end. */
+  close(): void;
+}
+
+/**
+ * Opens the raw grayscale pipe for a video.
+ *
+ * Chunks rather than frames, because who cuts them into frames matters: the
+ * decoder copies each one straight into a buffer a worker thread is waiting
+ * on, and going through an intermediate frame Buffer would be a second copy of
+ * every pixel for nothing.
+ */
+export async function openRawFrames(
   path: string,
-): AsyncGenerator<{ data: Buffer; width: number; height: number }> {
-  const { width, height } = await probe(path);
-  const frameSize = width * height;
+  layout: Layout | null = null,
+  limit?: number,
+): Promise<RawFrames> {
+  const source = await probe(path);
+
+  // A rendition with more pixels than the layout needs is downscaled here
+  // rather than read at full size. The extra pixels carry nothing — the signal
+  // is the same grid whatever height YouTube served it at — but they are real
+  // bytes through a pipe and a real copy per frame, four times as many at
+  // 2160p. ffmpeg averages them down in C, cheaper than reading them whole.
+  //
+  // The floor is what the sampler needs, not the canvas: at 2-pixel blocks
+  // that is 2160p, and downscaling to 1080p would throw the video away.
+  const wantW = layout ? layout.gridW * MIN_PIXELS_PER_BLOCK : 0;
+  const wantH = layout ? layout.gridH * MIN_PIXELS_PER_BLOCK : 0;
+  const shrink = layout !== null && source.height > wantH;
+  const width = shrink ? wantW : source.width;
+  const height = shrink ? wantH : source.height;
 
   const proc = spawn('ffmpeg', [
     '-loglevel', 'error',
     '-i', path,
+    ...(shrink ? ['-vf', `scale=${wantW}:${wantH}:flags=area`] : []),
+    ...(limit ? ['-frames:v', String(limit)] : []),
     '-f', 'rawvideo',
     '-pix_fmt', 'gray',
     'pipe:1',
   ], { stdio: ['ignore', 'pipe', 'inherit'] });
 
+  return {
+    width,
+    height,
+    frameSize: width * height,
+    chunks: proc.stdout,
+    close: () => void proc.kill('SIGKILL'),
+  };
+}
+
+/** Yields decoded grayscale frames, downscaled to what the layout needs. */
+export async function* readFrames(
+  path: string,
+  layout: Layout | null = null,
+  limit?: number,
+): AsyncGenerator<{ data: Buffer; width: number; height: number }> {
+  const { width, height, frameSize, chunks } = await openRawFrames(path, layout, limit);
+
   let pending: Buffer[] = [];
   let pendingBytes = 0;
 
-  for await (const chunk of proc.stdout) {
-    pending.push(chunk as Buffer);
-    pendingBytes += (chunk as Buffer).length;
+  for await (const chunk of chunks) {
+    pending.push(chunk);
+    pendingBytes += chunk.length;
 
     while (pendingBytes >= frameSize) {
       const joined = pending.length === 1 ? pending[0] : Buffer.concat(pending, pendingBytes);

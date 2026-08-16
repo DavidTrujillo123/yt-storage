@@ -5,17 +5,26 @@ import { join } from 'node:path';
 import { encodeFile } from './encode.ts';
 import { decodeVideo } from './decode.ts';
 import { simulateYouTube } from './ffmpeg.ts';
-import { FPS, GROUP_BYTES, GROUP_FRAMES, RS_K, RS_M, SHARD_BYTES } from './geometry.ts';
+import { FPS, GROUP_FRAMES, RS_K, RS_M } from './geometry.ts';
+import { LAYOUTS, encodingLayout, layoutById } from './layout.ts';
 
 const mib = (n: number) => `${(n / 1024 / 1024).toFixed(2)} MiB`;
 
 function specs(): void {
-  const perSecond = (GROUP_BYTES / GROUP_FRAMES) * FPS;
-  console.log(`shard        ${SHARD_BYTES} bytes/frame`);
+  const writing = encodingLayout();
   console.log(`group        ${RS_K} data + ${RS_M} parity = ${GROUP_FRAMES} frames`);
-  console.log(`             ${mib(GROUP_BYTES)} payload, tolerates ${RS_M} dead frames`);
-  console.log(`throughput   ${mib(perSecond)}/s of video at ${FPS} fps`);
-  console.log(`             ${mib(perSecond * 3600)} per hour of video`);
+  console.log(`             tolerates ${RS_M} dead frames per group`);
+  for (const layout of LAYOUTS) {
+    const perSecond = (layout.groupBytes / GROUP_FRAMES) * FPS;
+    const mark = layout.id === writing.id ? ' <- writing' : '';
+    console.log('');
+    console.log(`${layout.id}${mark}`);
+    console.log(`  block      ${layout.block}px, grid ${layout.gridW}x${layout.gridH}`);
+    console.log(`  shard      ${layout.shardBytes} bytes/frame, ${mib(layout.groupBytes)} per group`);
+    console.log(`  throughput ${mib(perSecond)}/s of video at ${FPS} fps`);
+    console.log(`             ${mib(perSecond * 3600)} per hour of video`);
+    console.log(`  needs      a rendition served at ${layout.minHeight}p or better`);
+  }
 }
 
 /**
@@ -38,12 +47,18 @@ async function main(): Promise<void> {
   }
 
   if (command === 'encode') {
-    const [input, output] = args;
-    if (!input || !output) throw new Error('usage: encode <input-file> <output.mp4>');
+    const [input, output, layoutArg] = args;
+    if (!input || !output) throw new Error('usage: encode <input-file> <output.mp4> [layout]');
+    const layout = layoutArg ? layoutById(layoutArg) : encodingLayout();
 
-    const result = await encodeFile(input, output, (done, total) => {
-      progress(json, { type: 'progress', done, total }, `encoding group ${done}/${total}`);
-    });
+    const result = await encodeFile(
+      input,
+      output,
+      (done, total) => {
+        progress(json, { type: 'progress', done, total }, `encoding group ${done}/${total}`);
+      },
+      layout,
+    );
     const video = await stat(output);
 
     if (json) {
@@ -51,6 +66,7 @@ async function main(): Promise<void> {
       return;
     }
     process.stderr.write('\n');
+    console.log(`layout       ${result.layout} (needs ${layout.minHeight}p served back)`);
     console.log(`frames       ${result.frames}`);
     console.log(`duration     ${(result.frames / FPS).toFixed(1)}s`);
     console.log(`payload      ${mib(result.originalBytes)}`);
@@ -77,6 +93,7 @@ async function main(): Promise<void> {
       return;
     }
     process.stderr.write('\n');
+    console.log(`layout       ${stats.layout}`);
     console.log(`frames read  ${stats.framesRead}`);
     console.log(`repaired     ${stats.framesRepaired}  (soft-decision bit flips)`);
     console.log(`lost         ${stats.framesLost}  (rebuilt from parity)`);

@@ -5,15 +5,8 @@ import { crc32 } from '../src/crc32.ts';
 import { pack, unpack } from '../src/container.ts';
 import { encodeGroup, recoverGroup } from '../src/ecc.ts';
 import { buildHeader, decodeFrame, renderFrame, sampleFrame } from '../src/frame.ts';
-import {
-  BLOCK,
-  GROUP_FRAMES,
-  HEIGHT,
-  RS_K,
-  RS_M,
-  SHARD_BYTES,
-  WIDTH,
-} from '../src/geometry.ts';
+import { GROUP_FRAMES, HEIGHT, RS_K, RS_M, WIDTH } from '../src/geometry.ts';
+import { LAYOUTS, WIDE } from '../src/layout.ts';
 
 describe('crc32', () => {
   it('matches the standard check vector', () => {
@@ -75,7 +68,7 @@ describe('container', () => {
 });
 
 describe('erasure coding', () => {
-  const shards = () => Array.from({ length: RS_K }, () => randomBytes(SHARD_BYTES));
+  const shards = () => Array.from({ length: RS_K }, () => randomBytes(WIDE.shardBytes));
 
   it('rebuilds the data from any RS_K of the RS_K + RS_M frames', async () => {
     const data = shards();
@@ -103,17 +96,19 @@ describe('erasure coding', () => {
   });
 });
 
-describe('frame', () => {
-  const payload = randomBytes(SHARD_BYTES);
+// Every layout is a physical layer of its own, so each one is held to the same
+// bar: what one grid can round-trip, damage and repair, the other must too.
+for (const layout of LAYOUTS) describe(`frame (${layout.id})`, () => {
+  const payload = randomBytes(layout.shardBytes);
   const header = buildHeader({ groupIndex: 7, shardIndex: 25, flags: 0 }, payload);
-  const image = renderFrame(header, payload);
+  const image = renderFrame(header, payload, layout);
 
   it('renders a canvas of exactly one frame', () => {
     assert.equal(image.length, WIDTH * HEIGHT);
   });
 
   it('round-trips bits through pixels', () => {
-    const decoded = decodeFrame(sampleFrame(image, WIDTH, HEIGHT));
+    const decoded = decodeFrame(sampleFrame(image, WIDTH, HEIGHT, layout), layout);
     assert.ok(decoded);
     assert.deepEqual(decoded.payload, payload);
     assert.equal(decoded.header.groupIndex, 7);
@@ -132,7 +127,7 @@ describe('frame', () => {
       }
     }
 
-    const decoded = decodeFrame(sampleFrame(big, WIDTH * scale, HEIGHT * scale));
+    const decoded = decodeFrame(sampleFrame(big, WIDTH * scale, HEIGHT * scale, layout), layout);
     assert.deepEqual(decoded?.payload, payload);
   });
 
@@ -140,60 +135,73 @@ describe('frame', () => {
     // Black at 40 and white at 200 instead of 0 and 255: the checkerboard
     // border is what lets the decoder find the new midpoint.
     const washed = Buffer.from(image.map((v) => (v === 255 ? 200 : 40)));
-    assert.deepEqual(decodeFrame(sampleFrame(washed, WIDTH, HEIGHT))?.payload, payload);
+    assert.deepEqual(decodeFrame(sampleFrame(washed, WIDTH, HEIGHT, layout), layout)?.payload, payload);
   });
 
   it('repairs the least confident bit when the CRC fails', () => {
-    const sampled = sampleFrame(image, WIDTH, HEIGHT);
+    const sampled = sampleFrame(image, WIDTH, HEIGHT, layout);
     const target = 900;
     sampled.bits[target] ^= 1;
     sampled.confidence[target] = 0; // as a marginal block would report
 
-    const decoded = decodeFrame(sampled);
+    const decoded = decodeFrame(sampled, layout);
     assert.deepEqual(decoded?.payload, payload);
     assert.equal(decoded?.repairedBits, 1);
   });
 
   it('repairs two flipped bits', () => {
-    const sampled = sampleFrame(image, WIDTH, HEIGHT);
+    const sampled = sampleFrame(image, WIDTH, HEIGHT, layout);
     for (const i of [64, 4096]) {
       sampled.bits[i] ^= 1;
       sampled.confidence[i] = 0;
     }
-    assert.equal(decodeFrame(sampled)?.repairedBits, 2);
+    assert.equal(decodeFrame(sampled, layout)?.repairedBits, 2);
   });
 
   it('reports a lost frame instead of returning wrong bytes', () => {
     // Damage far beyond the soft-decision budget: the CRC must turn this into
     // an erasure, which is the case Reed-Solomon handles. Silently returning
     // corrupt bytes here would defeat every layer above.
-    const sampled = sampleFrame(image, WIDTH, HEIGHT);
+    const sampled = sampleFrame(image, WIDTH, HEIGHT, layout);
     for (let i = 0; i < 400; i++) sampled.bits[i * 37] ^= 1;
-    assert.equal(decodeFrame(sampled), null);
+    assert.equal(decodeFrame(sampled, layout), null);
   });
 
   it('does not attempt repair when it is turned off', () => {
-    const sampled = sampleFrame(image, WIDTH, HEIGHT);
+    const sampled = sampleFrame(image, WIDTH, HEIGHT, layout);
     sampled.bits[10] ^= 1;
     sampled.confidence[10] = 0;
-    assert.equal(decodeFrame(sampled, false), null);
+    assert.equal(decodeFrame(sampled, layout, false), null);
   });
 
   it('rejects a frame of noise rather than parsing it', () => {
     const noise = randomBytes(WIDTH * HEIGHT);
-    assert.equal(decodeFrame(sampleFrame(noise, WIDTH, HEIGHT)), null);
+    assert.equal(decodeFrame(sampleFrame(noise, WIDTH, HEIGHT, layout), layout), null);
   });
 });
 
-describe('geometry', () => {
-  it('keeps shard bytes divisible by 8', () => {
-    // @ronomon/reed-solomon requires it; a change to BLOCK or the header that
-    // breaks the rule fails here rather than at the first upload.
-    assert.equal(SHARD_BYTES % 8, 0);
-  });
+describe('layouts', () => {
+  for (const layout of LAYOUTS) {
+    it(`${layout.id} keeps shard bytes divisible by 8`, () => {
+      // @ronomon/reed-solomon requires it; a block size or header change that
+      // breaks the rule fails here rather than at the first upload.
+      assert.equal(layout.shardBytes % 8, 0);
+    });
 
-  it('divides the canvas into whole blocks', () => {
-    assert.equal(WIDTH % BLOCK, 0);
-    assert.equal(HEIGHT % BLOCK, 0);
+    it(`${layout.id} divides the canvas into whole blocks`, () => {
+      assert.equal(WIDTH % layout.block, 0);
+      assert.equal(HEIGHT % layout.block, 0);
+    });
+
+    it(`${layout.id} asks for a height that is whole blocks`, () => {
+      // A rendition where block edges fall between pixels is what actually
+      // breaks sampling, so the floor has to divide the grid exactly.
+      assert.equal(layout.minHeight % layout.gridH, 0);
+      assert.ok(layout.minHeight / layout.gridH >= 2, 'needs at least two pixels a block');
+    });
+  }
+
+  it('has no two layouts sharing an id', () => {
+    assert.equal(new Set(LAYOUTS.map((l) => l.id)).size, LAYOUTS.length);
   });
 });
