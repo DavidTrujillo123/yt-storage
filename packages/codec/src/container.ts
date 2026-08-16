@@ -18,14 +18,34 @@ export interface ContainerMeta {
  * Header (big endian):
  *   magic(4) version(1) flags(1) payloadLength(8) sha256(32) nameLength(2) name(n)
  */
+/**
+ * How much of a large file is compressed to find out whether the rest is worth
+ * compressing, and the ratio below which it is.
+ *
+ * Compressing to decide used to mean compressing all of it: a 400MB video —
+ * already compressed, so the answer is always no — spent six seconds and held
+ * a second copy of itself to learn that. A slice answers the same question,
+ * and being wrong only costs ratio, never correctness.
+ */
+const GZIP_SAMPLE_BYTES = 4 * 1024 * 1024;
+const GZIP_WORTH_IT = 0.98;
+
 export function pack(name: string, data: Buffer): { stream: Buffer; meta: ContainerMeta } {
   const sha256 = createHash('sha256').update(data).digest();
 
   // Skip compression when it does not help — already-compressed input (zip,
   // jpeg, mp4) grows slightly under gzip, and every wasted byte is video.
-  const compressed = gzipSync(data, { level: 6 });
-  const gzipped = compressed.length < data.length;
-  const payload = gzipped ? compressed : data;
+  let compressed: Buffer | null = null;
+  if (data.length <= GZIP_SAMPLE_BYTES) {
+    compressed = gzipSync(data, { level: 6 });
+  } else {
+    const sample = data.subarray(0, GZIP_SAMPLE_BYTES);
+    const ratio = gzipSync(sample, { level: 6 }).length / sample.length;
+    if (ratio < GZIP_WORTH_IT) compressed = gzipSync(data, { level: 6 });
+  }
+
+  const gzipped = compressed !== null && compressed.length < data.length;
+  const payload = gzipped ? compressed! : data;
 
   const nameBuf = Buffer.from(name, 'utf8');
   const header = Buffer.alloc(48 + nameBuf.length);
