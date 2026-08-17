@@ -9,6 +9,17 @@ interface Format {
   vcodec?: string;
 }
 
+export interface DownloadOptions {
+  /**
+   * Served height to ask for: the decoder's floor by default, and `null` for
+   * the best rendition at or above it — which is what every download did
+   * before there was a choice.
+   */
+  height?: number | null;
+  /** Fetch only these seconds of the video rather than all of it. */
+  section?: { fromSeconds: number; toSeconds: number };
+}
+
 /**
  * A yt-dlp failure with its output intact.
  *
@@ -112,9 +123,31 @@ export class YtdlpService {
    * sole option at this height is muxed. Neither falls back below the floor —
    * a silent drop to 720p would yield a file the decoder cannot read, which is
    * worse than a loud failure.
+   *
+   * `height` asks for that rung exactly, and only then for the best rung at or
+   * above the floor. That order is the whole point: these uploads are 4K, so
+   * `bestvideo` alone means the 2160p rendition, roughly four times the bytes
+   * of the 1080p one — and every grid here is measured readable at 1080p. The
+   * fallbacks can only ever land *higher* than what was asked for, so the
+   * worst case is today's behaviour rather than an unreadable file.
    */
-  private readonly format =
-    `bestvideo[height>=${MIN_DECODABLE_HEIGHT}]/best[height>=${MIN_DECODABLE_HEIGHT}]`;
+  private formatFor(height: number | null): string {
+    const best = `bestvideo[height>=${MIN_DECODABLE_HEIGHT}]/best[height>=${MIN_DECODABLE_HEIGHT}]`;
+    return height === null ? best : `bestvideo[height=${height}]/${best}`;
+  }
+
+  /**
+   * How many DASH fragments yt-dlp fetches at once.
+   *
+   * YouTube serves these as fragments and yt-dlp takes them one at a time by
+   * default — a single stream on a link with room for several. A restore moves
+   * gigabytes, and the download measured as three quarters of its wall clock,
+   * so this is the number that matters most in this file.
+   */
+  private get fragments(): string {
+    const asked = Number(process.env.YTDLP_CONCURRENT_FRAGMENTS);
+    return String(Number.isFinite(asked) && asked > 0 ? Math.floor(asked) : 16);
+  }
 
   /**
    * Heights YouTube currently serves, highest first. Diagnostics only.
@@ -162,7 +195,10 @@ export class YtdlpService {
     videoId: string,
     outPath: string,
     onProgress?: (percent: number | null) => void,
+    options: DownloadOptions = {},
   ): Promise<void> {
+    const height = options.height === undefined ? MIN_DECODABLE_HEIGHT : options.height;
+    const section = options.section;
     await this.accounts.withCookies(accountId, async (cookiePath) => {
       try {
         // No --no-warnings. yt-dlp reports the things that matter here as
@@ -172,20 +208,26 @@ export class YtdlpService {
         await this.run(
           [
             '--cookies', cookiePath,
-            '-f', this.format,
+            '-f', this.formatFor(height),
+            // Only the seconds of video a caller asked for. yt-dlp keeps the
+            // fragments that overlap the range and remuxes them, so the
+            // picture is untouched — no re-encode, and therefore nothing the
+            // decoder has to survive that a whole download would not.
+            //
+            // The range is generous on both sides by the time it gets here:
+            // the cut lands on fragment boundaries, not on the second asked
+            // for, and every frame states its own group so a wide cut costs
+            // frames rather than correctness.
+            ...(section
+              ? ['--download-sections', `*${section.fromSeconds}-${section.toSeconds}`]
+              : []),
             '--no-part',
             // Without this, a file left behind by an interrupted attempt is
             // treated as a partial download to resume, and YouTube answers
             // "HTTP Error 416: Requested range not satisfiable" — for good,
             // until somebody deletes the file by hand.
             '--force-overwrites',
-            // YouTube serves these as DASH fragments, which yt-dlp fetches one
-            // at a time by default — a single stream on a link that has room
-            // for several. Eight is still well inside what one video's CDN
-            // serves without throttling, and a restore moves gigabytes: the
-            // download is the half of it that no amount of decoding speed
-            // touches.
-            '--concurrent-fragments', '8',
+            '--concurrent-fragments', this.fragments,
             // One progress line per update instead of a carriage-returned bar,
             // and only the two numbers this needs. `total_bytes` is absent
             // until the download starts and stays NA for some fragmented
@@ -236,7 +278,8 @@ export class YtdlpService {
         throw error;
       }
     });
-    this.log.log(`downloaded ${videoId}`);
+    const at = section ? ` ${section.fromSeconds}-${section.toSeconds}s` : '';
+    this.log.log(`downloaded ${videoId}${at} at ${height === null ? 'the best height' : `${height}p`}`);
   }
 
   /** Cheap authenticated round-trip used by the cookie health check. */

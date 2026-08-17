@@ -129,44 +129,69 @@ export async function writeTar(entries: TarSource[], outPath: string): Promise<n
   return written;
 }
 
+/** Hands back `length` bytes at `offset`, or fewer at the end of the archive. */
+export type BlockReader = (offset: number, length: number) => Promise<Buffer>;
+
 /**
  * Walks the headers and skips the data, so listing a 10 GiB archive reads a few
  * kilobytes rather than all of it.
+ *
+ * Driven by a reader rather than a path because those few kilobytes are not
+ * always on a disk: a bundle still living on YouTube is read by pulling the
+ * seconds of video that hold the block being asked for, and the walk is the
+ * same walk either way.
  */
+export async function walkTar(
+  read: BlockReader,
+  total: number,
+  limit = 10_000,
+): Promise<TarItem[]> {
+  const items: TarItem[] = [];
+
+  let offset = 0;
+  while (offset + BLOCK <= total && items.length < limit) {
+    const block = await read(offset, BLOCK);
+    if (block.length < BLOCK) break;
+
+    // A zero block is the end of the archive.
+    if (block[0] === 0) break;
+    if (block.toString('ascii', 257, 262) !== 'ustar') {
+      throw new Error('not a tar archive');
+    }
+
+    const name = block.toString('utf8', 0, NAME_MAX).replace(/\0.*$/, '');
+    const prefix = block.toString('utf8', 345, 345 + PREFIX_MAX).replace(/\0.*$/, '');
+    const size = parseInt(block.toString('ascii', 124, 136).replace(/[\0 ]/g, ''), 8) || 0;
+    const type = block.toString('ascii', 156, 157);
+
+    offset += BLOCK;
+    if (type === '0' || type === '\0') {
+      items.push({ name: prefix ? `${prefix}/${name}` : name, size, offset });
+    }
+    offset += Math.ceil(size / BLOCK) * BLOCK;
+  }
+
+  return items;
+}
+
+/** The same walk, over an archive that is already on disk. */
 export async function listTar(path: string, limit = 10_000): Promise<TarItem[]> {
   const { size: total } = await stat(path);
   const handle = await open(path, 'r');
   const block = Buffer.alloc(BLOCK);
-  const items: TarItem[] = [];
 
   try {
-    let offset = 0;
-    while (offset + BLOCK <= total && items.length < limit) {
-      const { bytesRead } = await handle.read(block, 0, BLOCK, offset);
-      if (bytesRead < BLOCK) break;
-
-      // A zero block is the end of the archive.
-      if (block[0] === 0) break;
-      if (block.toString('ascii', 257, 262) !== 'ustar') {
-        throw new Error('not a tar archive');
-      }
-
-      const name = block.toString('utf8', 0, NAME_MAX).replace(/\0.*$/, '');
-      const prefix = block.toString('utf8', 345, 345 + PREFIX_MAX).replace(/\0.*$/, '');
-      const size = parseInt(block.toString('ascii', 124, 136).replace(/[\0 ]/g, ''), 8) || 0;
-      const type = block.toString('ascii', 156, 157);
-
-      offset += BLOCK;
-      if (type === '0' || type === '\0') {
-        items.push({ name: prefix ? `${prefix}/${name}` : name, size, offset });
-      }
-      offset += Math.ceil(size / BLOCK) * BLOCK;
-    }
+    return await walkTar(
+      async (offset, length) => {
+        const { bytesRead } = await handle.read(block, 0, length, offset);
+        return block.subarray(0, bytesRead);
+      },
+      total,
+      limit,
+    );
   } finally {
     await handle.close();
   }
-
-  return items;
 }
 
 export function isTarName(name: string): boolean {

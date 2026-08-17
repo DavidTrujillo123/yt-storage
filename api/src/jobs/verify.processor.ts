@@ -3,9 +3,9 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { CodecService } from '../codec/codec.service';
 import { FilesService } from '../files/files.service';
 import { RestoreCache } from '../files/restore-cache';
+import { RestoreService } from '../files/restore.service';
 import { firstLine, YtdlpService } from '../youtube/ytdlp.service';
 import { FileJob, VERIFY_QUEUE, verifyBackoff } from './queues';
 
@@ -28,7 +28,7 @@ export class VerifyProcessor extends WorkerHost {
   constructor(
     private readonly files: FilesService,
     private readonly ytdlp: YtdlpService,
-    private readonly codec: CodecService,
+    private readonly restore: RestoreService,
     private readonly cache: RestoreCache,
   ) {
     super();
@@ -53,16 +53,23 @@ export class VerifyProcessor extends WorkerHost {
         verifyAttempts: job.attemptsMade + 1,
         lastCheckedAt: new Date(),
       });
-      await this.ytdlp.download(file.ytAccountId, file.videoId, videoPath);
-
-      // VERIFYING starts here, not at the top. Setting it before the download
-      // meant the row read "verifying" for the whole retry window with a null
-      // error, so a file waiting on YouTube looked identical to one being
-      // actively checked. Until the video is fetched it is still PROCESSING —
-      // which is exactly what the status names say.
-      await this.files.setStatus(file.id, 'VERIFYING');
-
-      const result = await this.codec.decode(videoPath, dir);
+      // The same download-and-decode a restore does, heights and all. Sharing
+      // it is the point: verification is the claim that a later read will
+      // work, so checking a rendition nobody reads back would prove the wrong
+      // thing. It also records which height answered, so the first real
+      // restore does not rediscover it.
+      //
+      // VERIFYING is set inside, not at the top. Setting it before the
+      // download meant the row read "verifying" for the whole retry window
+      // with a null error, so a file waiting on YouTube looked identical to
+      // one being actively checked. Until the video is fetched it is still
+      // PROCESSING — which is exactly what the status names say.
+      let marked = false;
+      const { result } = await this.restore.fetchAndDecode(file, videoPath, dir, (phase) => {
+        if (phase !== 'decoding' || marked) return;
+        marked = true;
+        void this.files.setStatus(file.id, 'VERIFYING');
+      });
       if (result.sha256 !== file.sha256) {
         throw new Error(`hash mismatch: stored ${file.sha256}, recovered ${result.sha256}`);
       }

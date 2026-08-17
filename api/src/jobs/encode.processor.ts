@@ -27,7 +27,13 @@ export class EncodeProcessor extends WorkerHost {
       const dir = await this.files.ensureDir('videos');
       const videoPath = join(dir, `${file.id}.mp4`);
 
+      // One row written per percentage point, not per group. The codec reports
+      // a group at a time — four hundred of them for a six-hundred-megabyte
+      // file — and a percentage only has a hundred values to move through.
+      let reported = -1;
       const result = await this.codec.encode(file.sourcePath, videoPath, (percent) => {
+        if (percent === reported) return;
+        reported = percent;
         void this.files.update(file.id, { progress: percent });
       });
 
@@ -35,6 +41,11 @@ export class EncodeProcessor extends WorkerHost {
         videoPath,
         frames: result.frames,
         videoBytes: result.videoBytes,
+        // Recorded here because here is the only place that knows without
+        // reading the video back: every restore of this file now skips the
+        // detection pass, and a partial read has a grid to measure groups in
+        // before it has decoded a single frame.
+        layout: result.layout,
         progress: 100,
       });
 

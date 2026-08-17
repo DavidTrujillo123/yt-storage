@@ -16,17 +16,14 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { createReadStream, existsSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
-import { isTarName, listTar } from './tar';
+import { createReadStream } from 'node:fs';
+import { isTarName } from './tar';
 import { MAX_BUNDLE_ENTRIES } from './bundle';
 import type { Request, Response } from 'express';
 import { FilesService } from './files.service';
 import type { StoredFile } from './stored-file.entity';
-import { RestoreCache } from './restore-cache';
 import { RestoreProgress } from './restore-progress';
-import { CodecService } from '../codec/codec.service';
+import { RestoreService, type RestoredBytes } from './restore.service';
 import { CookiesExpiredError, YtdlpService } from '../youtube/ytdlp.service';
 import { MIN_DECODABLE_HEIGHT } from '../youtube/constants';
 import { SessionGuard } from '../auth/session.guard';
@@ -39,8 +36,7 @@ export class FilesController {
   constructor(
     private readonly files: FilesService,
     private readonly ytdlp: YtdlpService,
-    private readonly codec: CodecService,
-    private readonly cache: RestoreCache,
+    private readonly restore: RestoreService,
     private readonly restoring: RestoreProgress,
   ) {}
 
@@ -195,20 +191,23 @@ export class FilesController {
       throw new BadRequestException(`${file.name} is not a bundle`);
     }
 
-    const bytes = await this.bytesOf(file, false);
     try {
-      return { name: file.name, entries: await listTar(bytes.path) };
-    } finally {
-      bytes.cleanup?.();
+      return { name: file.name, entries: await this.restore.entries(file) };
+    } catch (error) {
+      if (error instanceof CookiesExpiredError) throw new BadRequestException(error.message);
+      throw error;
     }
   }
 
   /**
    * One file out of a bundle, by its position in the listing.
    *
-   * Served as a byte range of the archive, so pulling one photo out of a folder
-   * of two hundred reads only that photo — the whole point of keeping the
-   * offsets from the listing.
+   * Served as a byte range, so pulling one photo out of a folder of two hundred
+   * reads only that photo — the whole point of keeping the offsets from the
+   * listing. When the archive is still on YouTube that range is a run of
+   * groups, which is a few seconds of video rather than all of it; when it is
+   * already on disk it is a range of the file. `entryBytes` decides which, and
+   * hands back a path either way.
    */
   @Get(':id/entries/:index/download')
   async entry(
@@ -221,12 +220,12 @@ export class FilesController {
     const file = await this.files.get(user.id, id);
     if (!isTarName(file.name)) throw new BadRequestException(`${file.name} is not a bundle`);
 
-    const bytes = await this.bytesOf(file, false);
-    try {
-      const items = await listTar(bytes.path);
-      const item = items[Number(index)];
-      if (!item) throw new NotFoundException(`no entry ${index} in ${file.name}`);
+    const items = await this.restore.entries(file);
+    const item = items[Number(index)];
+    if (!item) throw new NotFoundException(`no entry ${index} in ${file.name}`);
 
+    const bytes = await this.restore.entryBytes(file, item);
+    try {
       const leaf = item.name.split('/').pop() ?? item.name;
       res.set({
         'Content-Type': inline ? contentTypeOf(leaf) : 'application/octet-stream',
@@ -237,11 +236,15 @@ export class FilesController {
         'Cache-Control': 'private, max-age=3600, must-revalidate',
       });
 
-      // An empty entry has no range to read; end must not go below start.
+      // `entryBytes` returns either the whole archive, where the entry is a
+      // range of it, or just the entry, where it is the whole file. `isSlice`
+      // is which — reading a range out of a file that is only the entry would
+      // seek past the end of it.
+      const start = bytes.isSlice ? 0 : item.offset;
       const stream =
         item.size === 0
           ? createReadStream(bytes.path, { start: 0, end: -1 })
-          : createReadStream(bytes.path, { start: item.offset, end: item.offset + item.size - 1 });
+          : createReadStream(bytes.path, { start, end: start + item.size - 1 });
       if (bytes.cleanup) stream.on('close', bytes.cleanup);
       return new StreamableFile(stream);
     } catch (error) {
@@ -251,80 +254,19 @@ export class FilesController {
   }
 
   /**
-   * The file's bytes on local disk, whatever it takes to get them there:
-   * the original copy, then the restore cache, then YouTube.
+   * The file's bytes on local disk, whatever it takes to get them there.
    *
-   * `cleanup` is set only when the caller is responsible for scratch — which
-   * happens only if the cache refused the file.
+   * The work is in `RestoreService`; what belongs here is turning its one
+   * caller-fixable failure into a 4xx. Expired cookies as a 500 reached the
+   * page as yt-dlp's paragraph about --cookies, which reads like a bug in the
+   * app rather than an errand on the Accounts page.
    */
-  private async bytesOf(
-    file: StoredFile,
-    fromYoutube: boolean,
-  ): Promise<{ path: string; cleanup?: () => void }> {
-    if (!fromYoutube && file.sourcePath && existsSync(file.sourcePath)) {
-      return { path: file.sourcePath };
-    }
-
-    if (!file.videoId || !file.ytAccountId) {
-      throw new BadRequestException(`file is ${file.status}; nothing to download yet`);
-    }
-
-    // Restored once, kept until evicted. Everything below this line costs a
-    // full video download and decode, so it runs at most once per set of bytes.
-    if (!fromYoutube) {
-      const cached = await this.cache.get(file.sha256);
-      if (cached) return { path: cached };
-    }
-
-    // A fresh directory every time. yt-dlp writes the video straight to this
-    // path (--no-part), so anything left by an interrupted attempt makes it
-    // try to resume a file it has no range for: "HTTP Error 416: Requested
-    // range not satisfiable", on every attempt after the first.
-    const dir = this.files.workDir('restore', file.id);
-    await rm(dir, { recursive: true, force: true });
-    await this.files.ensureDir('restore', file.id);
-
-    const videoPath = join(dir, 'download.mp4');
-    this.restoring.begin(file.id);
+  private async bytesOf(file: StoredFile, fromYoutube: boolean): Promise<RestoredBytes> {
     try {
-      await this.ytdlp.download(file.ytAccountId, file.videoId, videoPath, (percent) =>
-        this.restoring.set(file.id, 'downloading', percent),
-      );
-      const result = await this.codec.decode(videoPath, dir, (percent) =>
-        this.restoring.set(file.id, 'decoding', percent),
-      );
-
-      if (file.importedAt) {
-        // A row read back off the channel knows only what the description said.
-        // The container header is the authority — it is what the bytes actually
-        // are — so this is where an imported row stops being a claim. Refusing a
-        // mismatch here would refuse the file for disagreeing with its own
-        // description, which is the one thing that was never verified.
-        await this.files.confirmImported(file, result);
-      } else if (result.sha256 !== file.sha256) {
-        throw new BadRequestException(`recovered data does not match the stored hash for ${file.name}`);
-      }
-
-      // Into the cache before the scratch directory goes, so the next read of
-      // these bytes — a download, a listing, one entry — is a file read.
-      const cached = await this.cache.put(result.sha256, result.name);
-      if (cached) {
-        await rm(dir, { recursive: true, force: true });
-        return { path: cached };
-      }
-
-      return { path: result.name, cleanup: () => void rm(dir, { recursive: true, force: true }) };
+      return await this.restore.bytes(file, fromYoutube);
     } catch (error) {
-      // Leaving the scratch behind is what caused the 416 in the first place.
-      await rm(dir, { recursive: true, force: true });
-      // Expired cookies are the caller's to fix, not a fault in this request:
-      // as a 500 it reached the page as yt-dlp's paragraph about --cookies,
-      // which reads like a bug in the app rather than an errand on the
-      // Accounts page.
       if (error instanceof CookiesExpiredError) throw new BadRequestException(error.message);
       throw error;
-    } finally {
-      this.restoring.end(file.id);
     }
   }
 

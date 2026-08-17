@@ -87,6 +87,39 @@ export class StoredFile {
   @Column({ type: 'integer', nullable: true })
   videoBytes!: number | null;
 
+  /**
+   * Which grid wrote the video, when this instance is the one that wrote it.
+   *
+   * Null on every row that predates the column and on every imported row, and
+   * the decoder finds out for itself in both cases — it is a shortcut past the
+   * detection pass, never something the decode has to be told. A wrong value
+   * fails on the first frame's magic rather than producing wrong bytes.
+   */
+  @Column({ type: 'text', nullable: true })
+  layout!: string | null;
+
+  /**
+   * The served height the last successful restore used.
+   *
+   * Restores ask for the smallest rendition the grid can read and fall back to
+   * the best one if that does not decode. Remembering the answer is what stops
+   * a file that genuinely needs 2160p from paying for the failed attempt every
+   * single time.
+   */
+  @Column({ type: 'integer', nullable: true })
+  restoreHeight!: number | null;
+
+  /**
+   * The tar listing of a bundle, once something has walked it.
+   *
+   * A listing is names, sizes and offsets — kilobytes — but reading it costs a
+   * whole restore, because the 512-byte headers are spread across the archive.
+   * Keeping it turns every later read of one entry into a byte range, and a
+   * byte range into the handful of groups that hold it.
+   */
+  @Column({ type: 'text', nullable: true })
+  entriesJson!: string | null;
+
   /** Progress of the current stage, 0-100. */
   @Column({ type: 'integer', default: 0 })
   progress!: number;

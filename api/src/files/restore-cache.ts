@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, rename, rm, stat, utimes } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /**
@@ -62,6 +62,42 @@ export class RestoreCache {
 
   async forget(sha256: string): Promise<void> {
     await rm(this.pathFor(sha256), { force: true }).catch(() => undefined);
+    // The fragments too: they are bytes of the same file, and a deleted file
+    // that still answers previews out of its own pieces is not deleted.
+    const names = await readdir(this.dir).catch(() => [] as string[]);
+    await Promise.all(
+      names
+        .filter((name) => name.startsWith(`${sha256}.g`))
+        .map((name) => rm(join(this.dir, name), { force: true }).catch(() => undefined)),
+    );
+  }
+
+  /**
+   * The same store, for one Reed-Solomon group rather than a whole file.
+   *
+   * A preview of one entry in a bundle needs the groups that hold it and none
+   * of the rest, and those groups are worth keeping for exactly the same
+   * reason the whole file is: getting them cost a download. They share the
+   * budget and the LRU so a directory full of fragments cannot crowd out the
+   * files, and the name says which is which — a fragment is never a candidate
+   * for `get()`, which only ever answers with a whole verified file.
+   */
+  async getGroup(sha256: string, group: number): Promise<Buffer | null> {
+    const path = this.groupPathFor(sha256, group);
+    if (!existsSync(path)) return null;
+    const now = new Date();
+    await utimes(path, now, now).catch(() => undefined);
+    return readFile(path).catch(() => null);
+  }
+
+  async putGroup(sha256: string, group: number, bytes: Buffer): Promise<void> {
+    try {
+      await mkdir(this.dir, { recursive: true });
+      await writeFile(this.groupPathFor(sha256, group), bytes);
+      await this.evict();
+    } catch (error) {
+      this.log.warn(`could not cache group ${group}: ${(error as Error).message}`);
+    }
   }
 
   /** Oldest first, until the directory is back inside its budget. */
@@ -91,5 +127,18 @@ export class RestoreCache {
   private pathFor(sha256: string): string {
     if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error(`not a sha256: ${sha256}`);
     return join(this.dir, sha256);
+  }
+
+  /**
+   * A fragment's name: the hash, then which group.
+   *
+   * The suffix is what keeps `pathFor` strict. A fragment is bytes of a file
+   * whose hash cannot be checked against them — only the frame CRCs and the
+   * group parity vouch for it — so it must never be reachable as the file.
+   */
+  private groupPathFor(sha256: string, group: number): string {
+    if (!/^[0-9a-f]{64}$/.test(sha256)) throw new Error(`not a sha256: ${sha256}`);
+    if (!Number.isInteger(group) || group < 0) throw new Error(`not a group index: ${group}`);
+    return join(this.dir, `${sha256}.g${group}`);
   }
 }

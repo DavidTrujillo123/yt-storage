@@ -24,6 +24,42 @@ export interface DecodeResult {
   layout: string;
 }
 
+export interface LayoutSpec {
+  id: string;
+  block: number;
+  shardBytes: number;
+  /** Payload bytes per Reed-Solomon group — the unit a partial read works in. */
+  groupBytes: number;
+  minHeight: number;
+}
+
+export interface CodecSpecs {
+  fps: number;
+  groupFrames: number;
+  writing: string;
+  layouts: LayoutSpec[];
+}
+
+export interface ContainerHeader {
+  name: string;
+  payloadLength: number;
+  sha256: string;
+  gzipped: boolean;
+  payloadOffset: number;
+}
+
+export interface RangeResult {
+  framesRead: number;
+  framesLost: number;
+  framesRepaired: number;
+  groupsRecovered: number;
+  startGroup: number;
+  layout: string;
+  /** Path the raw stream bytes were written to. */
+  name: string;
+  bytes: number;
+}
+
 /**
  * Runs the codec CLI as a child process.
  *
@@ -80,6 +116,34 @@ export class CodecService {
     });
   }
 
+  /**
+   * The codec's geometry, asked once and kept.
+   *
+   * A partial read has to turn a byte offset into a group index and a group
+   * index into a second of video, which needs `groupBytes` and the frame rate.
+   * Both live in the codec package, which this app cannot import — it is ESM
+   * and this is CommonJS, which is half of why the codec runs out of process
+   * at all — so they are asked for rather than copied.
+   */
+  async specs(): Promise<CodecSpecs> {
+    this.cachedSpecs ??= this.run<CodecSpecs>(['specs']);
+    return this.cachedSpecs;
+  }
+
+  private cachedSpecs: Promise<CodecSpecs> | null = null;
+
+  /** The geometry of one grid, or the one every pre-layout video used. */
+  async layout(id: string | null | undefined): Promise<LayoutSpec> {
+    const { layouts } = await this.specs();
+    const found = layouts.find((layout) => layout.id === id);
+    if (found) return found;
+    // The same fallback the codec makes: nothing before layouts existed says
+    // which grid it is, and all of it is the wide one.
+    const wide = layouts.find((layout) => layout.id === 'wide');
+    if (!wide) throw new Error('the codec reports no wide layout');
+    return wide;
+  }
+
   async encode(
     inputPath: string,
     outputPath: string,
@@ -97,16 +161,53 @@ export class CodecService {
     videoPath: string,
     outputDir: string,
     onProgress?: (percent: number) => void,
+    layout?: string | null,
   ): Promise<DecodeResult> {
     this.log.log(`decoding ${videoPath}`);
     // Frames read out of the frames the video holds. The total is absent when
     // the container does not carry one, and then there is no percentage to
     // report — the caller shows the phase without a bar rather than a made-up
     // number.
-    return this.run<DecodeResult>(['decode', videoPath, outputDir], (event) => {
-      if (event.type === 'progress' && typeof event.frames === 'number' && typeof event.total === 'number') {
-        onProgress?.(Math.round((event.frames / event.total) * 100));
-      }
-    });
+    return this.run<DecodeResult>(
+      ['decode', videoPath, outputDir, ...(layout ? ['--layout', layout] : [])],
+      (event) => {
+        if (event.type === 'progress' && typeof event.frames === 'number' && typeof event.total === 'number') {
+          onProgress?.(Math.round((event.frames / event.total) * 100));
+        }
+      },
+    );
+  }
+
+  /**
+   * Decodes a run of groups into raw container-stream bytes.
+   *
+   * No progress: a range is seconds of video, and a bar that finishes before
+   * the page has drawn it is worse than none.
+   */
+  async decodeRange(
+    videoPath: string,
+    startGroup: number,
+    endGroup: number,
+    outPath: string,
+    layout?: string | null,
+    fromStart = false,
+  ): Promise<RangeResult> {
+    this.log.log(`decoding groups ${startGroup}..${endGroup} of ${videoPath}`);
+    return this.run<RangeResult>([
+      'decode-range',
+      videoPath,
+      String(startGroup),
+      String(endGroup),
+      outPath,
+      ...(layout ? ['--layout', layout] : []),
+      // A video fetched as a section has its own timeline starting at the cut,
+      // so there is nothing before the range to seek past.
+      ...(fromStart ? ['--from-start'] : []),
+    ]);
+  }
+
+  /** Reads the container header out of a file of decoded stream bytes. */
+  async header(streamPath: string): Promise<ContainerHeader> {
+    return this.run<ContainerHeader>(['header', streamPath]);
   }
 }

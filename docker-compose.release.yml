@@ -48,6 +48,11 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@yt-storage.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Abcd1234}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5368709120}
+      # Restored bytes, kept so a second read of the same file is a disk read.
+      # An entry is a whole stored file, so the budget has to hold several of
+      # them or every preview pays for another download and decode; 2 GiB was
+      # smaller than two bundles.
+      CACHE_MAX_BYTES: ${CACHE_MAX_BYTES:-21474836480}
       TZ: ${TZ:-UTC}
     ports:
       - '${PORT:-3000}:3000'
