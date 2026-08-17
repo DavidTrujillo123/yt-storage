@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { describe, it } from 'node:test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { after, before, describe, it } from 'node:test';
 import { crc32 } from '../src/crc32.ts';
-import { pack, unpack } from '../src/container.ts';
+import { openStream, openStreamReader, pack, unpack } from '../src/container.ts';
 import { encodeGroup, recoverGroup } from '../src/ecc.ts';
 import { buildHeader, decodeFrame, renderFrame, sampleFrame } from '../src/frame.ts';
 import { GROUP_FRAMES, HEIGHT, RS_K, RS_M, WIDTH } from '../src/geometry.ts';
@@ -65,6 +68,67 @@ describe('container', () => {
     const { stream } = pack('short.bin', randomBytes(2048));
     assert.throws(() => unpack(stream.subarray(0, stream.length - 10)), /truncated stream/);
   });
+});
+
+/**
+ * The encoder reads its input off disk a group at a time rather than holding
+ * it, so the two ways of producing a container stream have to agree byte for
+ * byte — including which side of the gzip decision each input lands on.
+ */
+describe('streaming container', () => {
+  let dir: string;
+
+  before(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'isg-test-stream-'));
+  });
+
+  after(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const cases: [string, () => Buffer][] = [
+    ['an empty file', () => Buffer.alloc(0)],
+    ['a file smaller than the gzip sample', () => randomBytes(1000)],
+    ['one that compresses', () => Buffer.alloc(3 * 1024 * 1024, 0x41)],
+    ['one past the sample that does not compress', () => randomBytes(9 * 1024 * 1024)],
+    ['one past the sample that does', () => Buffer.alloc(9 * 1024 * 1024, 0x42)],
+  ];
+
+  for (const [label, make] of cases) {
+    it(`reads back exactly what pack() builds for ${label}`, async () => {
+      const data = make();
+      const file = join(dir, 'in.bin');
+      await writeFile(file, data);
+      const want = pack('in.bin', data).stream;
+
+      const source = await openStream(file, 'in.bin', join(dir, 'scratch.gz'));
+      const reader = await openStreamReader(source);
+      try {
+        const total = source.header.length + source.payloadLength;
+        assert.equal(total, want.length);
+        assert.equal(source.meta.gzipped, want.readUInt8(5) === 1);
+
+        // Odd-sized reads on purpose: the header and the payload live in
+        // different places and every chunk boundary is a chance to lose the
+        // seam between them.
+        const PAD = 777;
+        const got = Buffer.alloc(total + PAD);
+        for (let at = 0; at < got.length; at += 333) {
+          const chunk = Buffer.alloc(333);
+          await reader.read(chunk, at, chunk.length);
+          chunk.copy(got, at);
+        }
+
+        assert.deepEqual(got.subarray(0, total), want);
+        // Past the end is zero, which is what lets a final short group be
+        // padded without a second copy of anything.
+        assert.ok(got.subarray(total).every((byte) => byte === 0));
+      } finally {
+        await reader.close();
+        await source.close();
+      }
+    });
+  }
 });
 
 describe('erasure coding', () => {

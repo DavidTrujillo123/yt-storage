@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { FPS, HEIGHT, MIN_PIXELS_PER_BLOCK, UPSCALE_H, UPSCALE_W, WIDTH } from './geometry.ts';
+import { FPS, HEIGHT, UPSCALE_H, UPSCALE_W, WIDTH } from './geometry.ts';
 import type { Layout } from './layout.ts';
 
 /**
@@ -14,7 +14,29 @@ export interface VideoSink {
   close(): Promise<void>;
 }
 
-export function openVideoSink(outPath: string, layout: Layout, quiet = true): VideoSink {
+/**
+ * The x264 preset, and the one knob worth exposing on this whole path.
+ *
+ * `ultrafast` because ffmpeg is not part of the encode's cost, it is
+ * essentially all of it: on a 40 MiB fixture the whole `encodeFile` measured
+ * 25.3s and ffmpeg alone on the same frames measured 24.9s. A slower preset
+ * buys a smaller master, which is worth almost nothing here — uploading one
+ * measured ten times faster than producing it.
+ *
+ * Overridable so a machine on a thin connection can make the opposite trade
+ * without a rebuild, and so a suspected regression can be bisected against the
+ * old default by setting `CODEC_X264_PRESET=veryfast`.
+ */
+export function x264Preset(): string {
+  return process.env.CODEC_X264_PRESET || 'ultrafast';
+}
+
+export function openVideoSink(
+  outPath: string,
+  layout: Layout,
+  seconds: number,
+  quiet = true,
+): VideoSink {
   const args = [
     '-y',
     '-f', 'rawvideo',
@@ -26,9 +48,17 @@ export function openVideoSink(outPath: string, layout: Layout, quiet = true): Vi
     // audio stream as a special case and may never produce the muxed
     // renditions downloaders expect, and yt-dlp's default format selection
     // fails outright on audio-less videos. A few kbit/s buys normal handling.
+    //
+    // Cut to the length of the video with `-t` rather than left running and
+    // trimmed with `-shortest`. The output is identical either way and the
+    // memory is not: measured on 840 frames, `-shortest` peaked at 4.4 GiB
+    // where this peaks at 889 MiB. That five-fold difference was the whole of
+    // the encoder's memory ceiling — the JavaScript side of an encode is
+    // about 150 MiB whatever the file weighs — and so the reason uploads were
+    // capped at two gigabytes.
     '-f', 'lavfi',
+    '-t', seconds.toFixed(3),
     '-i', 'anullsrc=channel_layout=mono:sample_rate=8000',
-    '-shortest',
     '-map', '0:v',
     '-map', '1:a',
     '-c:a', 'aac',
@@ -38,7 +68,21 @@ export function openVideoSink(outPath: string, layout: Layout, quiet = true): Vi
     // Per layout: a finer grid costs x264 more bits at the same quality, and
     // has the margin at 2160p to give some of them back.
     '-crf', layout.crf,
-    '-preset', 'veryfast',
+    '-preset', x264Preset(),
+    // The one thing `ultrafast` turns off that this content cannot afford to
+    // lose. Measured on 840 real frames: veryfast is 24.9s for a 169 MiB
+    // master, ultrafast is 6.4s for 458 MiB — the preset drops CABAC, and
+    // entropy coding is most of what keeps a master of random noise small.
+    // Putting only that back costs 1.8s and gives the size straight back:
+    // 8.2s for 198 MiB. Three times faster for seventeen percent more upload,
+    // which is a trade worth making because an encode measured ten times
+    // longer than the upload that follows it.
+    //
+    // Nothing else was worth it — subme, me=hex, 8x8dct and deblocking all
+    // cost time without shrinking the file. That is what random noise drawn as
+    // flat, transform-aligned squares does to a motion-compensating encoder:
+    // there is nothing between frames to find.
+    '-x264-params', 'cabac=1',
     '-g', '30',
     '-movflags', '+faststart',
     outPath,
@@ -135,6 +179,7 @@ export async function openRawFrames(
   path: string,
   layout: Layout | null = null,
   limit?: number,
+  startSeconds?: number,
 ): Promise<RawFrames> {
   const source = await probe(path);
 
@@ -144,16 +189,26 @@ export async function openRawFrames(
   // bytes through a pipe and a real copy per frame, four times as many at
   // 2160p. ffmpeg averages them down in C, cheaper than reading them whole.
   //
-  // The floor is what the sampler needs, not the canvas: at 2-pixel blocks
-  // that is 2160p, and downscaling to 1080p would throw the video away.
-  const wantW = layout ? layout.gridW * MIN_PIXELS_PER_BLOCK : 0;
-  const wantH = layout ? layout.gridH * MIN_PIXELS_PER_BLOCK : 0;
+  // The floor is what the sampler needs, not the canvas, and it is per layout:
+  // the dense grid is measured readable at 1080p, which is two pixels a block,
+  // so a 2160p rendition of it is four times the bytes through this pipe for
+  // nothing. Asking every grid for four pixels a block — the wide grid's
+  // number — is what kept 4K frames flowing for a signal that fits in 1080p.
+  const wantW = layout ? layout.gridW * layout.pixelsPerBlock : 0;
+  const wantH = layout ? layout.gridH * layout.pixelsPerBlock : 0;
   const shrink = layout !== null && source.height > wantH;
   const width = shrink ? wantW : source.width;
   const height = shrink ? wantH : source.height;
 
   const proc = spawn('ffmpeg', [
     '-loglevel', 'error',
+    // Before -i, so ffmpeg seeks rather than decodes and throws away. It lands
+    // on the keyframe at or before the request and the caller gets whatever
+    // frames follow — which is fine here and deliberately not corrected with
+    // an output-side seek, because every frame states its own group and shard
+    // in its header. Position is read from the frames, never counted from the
+    // start of the pipe.
+    ...(startSeconds ? ['-ss', String(startSeconds)] : []),
     '-i', path,
     ...(shrink ? ['-vf', `scale=${wantW}:${wantH}:flags=area`] : []),
     ...(limit ? ['-frames:v', String(limit)] : []),
@@ -176,23 +231,36 @@ export async function* readFrames(
   path: string,
   layout: Layout | null = null,
   limit?: number,
+  startSeconds?: number,
 ): AsyncGenerator<{ data: Buffer; width: number; height: number }> {
-  const { width, height, frameSize, chunks } = await openRawFrames(path, layout, limit);
+  const { width, height, frameSize, chunks, close } = await openRawFrames(
+    path,
+    layout,
+    limit,
+    startSeconds,
+  );
 
   let pending: Buffer[] = [];
   let pendingBytes = 0;
 
-  for await (const chunk of chunks) {
-    pending.push(chunk);
-    pendingBytes += chunk.length;
+  try {
+    for await (const chunk of chunks) {
+      pending.push(chunk);
+      pendingBytes += chunk.length;
 
-    while (pendingBytes >= frameSize) {
-      const joined = pending.length === 1 ? pending[0] : Buffer.concat(pending, pendingBytes);
-      yield { data: joined.subarray(0, frameSize), width, height };
-      const rest = joined.subarray(frameSize);
-      pending = rest.length ? [rest] : [];
-      pendingBytes = rest.length;
+      while (pendingBytes >= frameSize) {
+        const joined = pending.length === 1 ? pending[0] : Buffer.concat(pending, pendingBytes);
+        yield { data: joined.subarray(0, frameSize), width, height };
+        const rest = joined.subarray(frameSize);
+        pending = rest.length ? [rest] : [];
+        pendingBytes = rest.length;
+      }
     }
+  } finally {
+    // A caller that stops early — layout detection, a partial read — would
+    // otherwise leave ffmpeg decoding the rest of the video into a pipe
+    // nobody reads.
+    close();
   }
 }
 

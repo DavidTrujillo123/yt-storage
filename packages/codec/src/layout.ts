@@ -44,6 +44,18 @@ export interface Layout {
    * landing on pixel edges, and that is not a clean function of block size.
    */
   minHeight: number;
+  /**
+   * Pixels a block covers at `minHeight`, and so the least detail the sampler
+   * needs kept — the point past which ffmpeg may downscale on the way in.
+   *
+   * Derived from the measured height rather than stated again, because the two
+   * cannot disagree: a grid readable at 1080p is a grid readable at
+   * `1080 / gridH` pixels a block, whatever put those pixels there. Two, for
+   * the dense grid, is not a typo — a 2-pixel block at 1080p is two whole
+   * pixels of its own, and what a block has to survive is the re-encode rather
+   * than the scaling.
+   */
+  pixelsPerBlock: number;
 }
 
 function layoutFor(id: LayoutId, block: number, crf: string, minHeight: number): Layout {
@@ -68,6 +80,7 @@ function layoutFor(id: LayoutId, block: number, crf: string, minHeight: number):
     groupBytes: RS_K * shardBytes,
     crf,
     minHeight,
+    pixelsPerBlock: minHeight / gridH,
   };
 }
 

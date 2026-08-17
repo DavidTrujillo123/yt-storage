@@ -2,11 +2,13 @@ import { mkdtemp, mkdir, readFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { writeFile } from 'node:fs/promises';
 import { encodeFile } from './encode.ts';
-import { decodeVideo } from './decode.ts';
+import { decodeRange, decodeVideo } from './decode.ts';
 import { simulateYouTube } from './ffmpeg.ts';
+import { readHeader } from './container.ts';
 import { FPS, GROUP_FRAMES, RS_K, RS_M } from './geometry.ts';
-import { LAYOUTS, encodingLayout, layoutById } from './layout.ts';
+import { LAYOUTS, encodingLayout, layoutById, type Layout } from './layout.ts';
 
 const mib = (n: number) => `${(n / 1024 / 1024).toFixed(2)} MiB`;
 
@@ -36,12 +38,48 @@ function progress(json: boolean, event: Record<string, unknown>, human: string):
   process.stderr.write(json ? `${JSON.stringify(event)}\n` : `\r${human}`);
 }
 
+/**
+ * Pulls `--name value` out of the argv and hands back what is left.
+ *
+ * Only the flags this CLI has, and only in that form: the positional arguments
+ * are what everything here is really driven by, and an options parser would be
+ * more machinery than the three flags justify.
+ */
+function takeOption(args: string[], name: string): { value: string | null; rest: string[] } {
+  const at = args.indexOf(name);
+  if (at === -1) return { value: null, rest: args };
+  const value = args[at + 1];
+  if (value === undefined) throw new Error(`${name} needs a value`);
+  return { value, rest: [...args.slice(0, at), ...args.slice(at + 2)] };
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const json = argv.includes('--json');
   const [command, ...args] = argv.filter((a) => a !== '--json');
 
   if (command === 'specs') {
+    // With --json this is the API's only source for the geometry: it runs the
+    // codec out of process, so it cannot import these numbers, and a second
+    // copy of `groupBytes` on the other side of that boundary is a copy that
+    // will eventually disagree.
+    if (json) {
+      console.log(
+        JSON.stringify({
+          fps: FPS,
+          groupFrames: GROUP_FRAMES,
+          writing: encodingLayout().id,
+          layouts: LAYOUTS.map((layout) => ({
+            id: layout.id,
+            block: layout.block,
+            shardBytes: layout.shardBytes,
+            groupBytes: layout.groupBytes,
+            minHeight: layout.minHeight,
+          })),
+        }),
+      );
+      return;
+    }
     specs();
     return;
   }
@@ -75,8 +113,14 @@ async function main(): Promise<void> {
   }
 
   if (command === 'decode') {
-    const [video, outDir = '.'] = args;
-    if (!video) throw new Error('usage: decode <video> [output-dir]');
+    // The grid, when the caller already knows it. It saves the detection pass,
+    // which is a second ffmpeg reading frames at native resolution before the
+    // real read starts; a wrong id would fail on the first frame's magic, so
+    // this is a shortcut and never a claim the decoder has to trust.
+    const { value: layoutArg, rest } = takeOption(args, '--layout');
+    const hint: Layout | undefined = layoutArg ? layoutById(layoutArg) : undefined;
+    const [video, outDir = '.'] = rest;
+    if (!video) throw new Error('usage: decode <video> [output-dir] [--layout <id>]');
 
     await mkdir(outDir, { recursive: true });
     const stats = await decodeVideo(video, outDir, (n, total) => {
@@ -86,7 +130,7 @@ async function main(): Promise<void> {
         { type: 'progress', frames: n, total },
         total ? `reading frame ${n}/${total}` : `reading frame ${n}`,
       );
-    });
+    }, hint);
 
     if (json) {
       console.log(JSON.stringify(stats));
@@ -99,6 +143,64 @@ async function main(): Promise<void> {
     console.log(`lost         ${stats.framesLost}  (rebuilt from parity)`);
     console.log(`written      ${stats.name}  ${mib(stats.bytes)}`);
     console.log(`sha256       ${stats.sha256}`);
+    return;
+  }
+
+  if (command === 'decode-range') {
+    const { value: layoutArg, rest: afterLayout } = takeOption(args, '--layout');
+    const hint: Layout | undefined = layoutArg ? layoutById(layoutArg) : undefined;
+    // For a video that is already only the section holding the range: its
+    // timeline starts at the cut, so there is nothing to seek past.
+    const seek = !afterLayout.includes('--from-start');
+    const rest = afterLayout.filter((arg) => arg !== '--from-start');
+    const [video, startArg, endArg, outPath] = rest;
+    if (!video || !startArg || !endArg || !outPath) {
+      throw new Error(
+        'usage: decode-range <video> <start-group> <end-group> <output-file> ' +
+          '[--layout <id>] [--from-start]',
+      );
+    }
+
+    // Raw stream bytes, not a file: the caller knows which slice of the
+    // container it asked for and what to do with it. Writing them out is this
+    // command's whole job, because the API talks to the codec over a pipe and
+    // a hundred megabytes does not belong in stdout.
+    const { bytes, stats } = await decodeRange(video, Number(startArg), Number(endArg), hint, seek);
+    await writeFile(outPath, bytes);
+
+    if (json) {
+      console.log(JSON.stringify({ ...stats, name: outPath, bytes: bytes.length }));
+      return;
+    }
+    console.log(`layout       ${stats.layout}`);
+    console.log(`groups       ${startArg}..${endArg}  (${stats.groupsRecovered} recovered)`);
+    console.log(`frames read  ${stats.framesRead}`);
+    console.log(`repaired     ${stats.framesRepaired}  (soft-decision bit flips)`);
+    console.log(`lost         ${stats.framesLost}  (rebuilt from parity)`);
+    console.log(`written      ${outPath}  ${mib(bytes.length)}`);
+    return;
+  }
+
+  if (command === 'header') {
+    const [streamPath] = args;
+    if (!streamPath) throw new Error('usage: header <stream-file>');
+
+    // The first bytes of a decoded range, read as a container header. It exists
+    // so the API can find where the payload starts and whether it is gzipped
+    // without a second copy of the format on the other side of the process
+    // boundary — a partial read cannot start from the middle of a gzip stream,
+    // so that flag decides whether a partial read is possible at all.
+    const head = await readFile(streamPath);
+    const meta = readHeader(head);
+
+    if (json) {
+      console.log(JSON.stringify(meta));
+      return;
+    }
+    console.log(`name         ${meta.name}`);
+    console.log(`payload      ${mib(meta.payloadLength)} at offset ${meta.payloadOffset}`);
+    console.log(`gzipped      ${meta.gzipped}`);
+    console.log(`sha256       ${meta.sha256}`);
     return;
   }
 
@@ -143,7 +245,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log('usage: isg <encode|decode|roundtrip|specs> [...]');
+  console.log('usage: isg <encode|decode|decode-range|header|roundtrip|specs> [...]');
   process.exitCode = 1;
 }
 

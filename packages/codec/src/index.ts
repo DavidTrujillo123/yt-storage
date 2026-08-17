@@ -1,17 +1,8 @@
 export { encodeFile, type EncodeResult } from './encode.ts';
-export { decodeVideo, detectLayout, type DecodeStats } from './decode.ts';
-export { pack, unpack, type ContainerMeta } from './container.ts';
+export { decodeRange, decodeVideo, detectLayout, type DecodeStats, type RangeStats } from './decode.ts';
+export { pack, readHeader, unpack, type ContainerHeader, type ContainerMeta } from './container.ts';
 export { probe, simulateYouTube, type SimulateOptions } from './ffmpeg.ts';
-export {
-  FPS,
-  GROUP_FRAMES,
-  HEIGHT,
-  MIN_PIXELS_PER_BLOCK,
-  RS_K,
-  RS_M,
-  UPSCALE_H,
-  WIDTH,
-} from './geometry.ts';
+export { FPS, GROUP_FRAMES, HEIGHT, RS_K, RS_M, UPSCALE_H, WIDTH } from './geometry.ts';
 export {
   DEFAULT_LAYOUT,
   DENSE,

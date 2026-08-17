@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { encodeFile } from '../src/encode.ts';
-import { decodeVideo } from '../src/decode.ts';
+import { decodeRange, decodeVideo } from '../src/decode.ts';
 import { simulateYouTube } from '../src/ffmpeg.ts';
+import { pack } from '../src/container.ts';
 import { DENSE, WIDE, type Layout } from '../src/layout.ts';
 
 /**
@@ -24,16 +25,28 @@ import { DENSE, WIDE, type Layout } from '../src/layout.ts';
 const hasFfmpeg = spawnSync('ffmpeg', ['-version'], { stdio: 'ignore' }).status === 0;
 const FIVE_MINUTES = 300_000;
 
-/** How hard YouTube is simulated per layout, and the height that must fail. */
-const cases: { layout: Layout; crf: number; below: number }[] = [
-  { layout: WIDE, crf: 50, below: 810 },
+/**
+ * How hard YouTube is simulated per layout, the height that must fail, and a
+ * quality nobody expects to see.
+ *
+ * `harsh` is there to watch the margin rather than only the result. The master
+ * is written with x264's `ultrafast` preset, which is three times faster than
+ * the `veryfast` it replaced and costs a little fidelity: measured on 840
+ * frames, a crf 44 transcode of the dense grid needs the soft-decision repair
+ * on two of them where the old master needed none. Two is fine — the erasure
+ * budget is six frames in every thirty and nothing was lost — but it is the
+ * number that would move first if the preset were pushed further, so it is
+ * asserted rather than remembered.
+ */
+const cases: { layout: Layout; crf: number; below: number; harsh: number }[] = [
+  { layout: WIDE, crf: 50, below: 810, harsh: 58 },
   // Denser blocks get a harsher crf than the crf 32 YouTube is estimated at,
   // rather than the extreme the wide grid shrugs off. 972p is where it stops:
   // one rung down from the height it needs, and measured.
-  { layout: DENSE, crf: 36, below: 972 },
+  { layout: DENSE, crf: 36, below: 972, harsh: 44 },
 ];
 
-for (const { layout, crf, below } of cases) {
+for (const { layout, crf, below, harsh } of cases) {
   describe(
     `round trip through a simulated YouTube (${layout.id})`,
     { skip: hasFfmpeg ? false : 'ffmpeg not installed' },
@@ -84,6 +97,49 @@ for (const { layout, crf, below } of cases) {
       );
 
       it(
+        `still recovers it at crf ${harsh}, well past anything YouTube applies`,
+        { timeout: FIVE_MINUTES },
+        async () => {
+          const served = join(dir, 'served-harsh.webm');
+          await simulateYouTube(master, served, { crf: harsh, height: layout.minHeight });
+
+          const out = await mkdtemp(join(dir, 'out-harsh-'));
+          const result = await decodeVideo(served, out);
+
+          assert.equal(result.sha256, sha256);
+          assert.equal(result.framesLost, 0, `lost ${result.framesLost} frames at crf ${harsh}`);
+          // The margin, watched. A master written by a faster preset spends a
+          // little of this; spending much of it is the signal to look at why.
+          assert.ok(
+            result.framesRepaired <= 6,
+            `repaired ${result.framesRepaired} of 30 frames at crf ${harsh}`,
+          );
+        },
+      );
+
+      it(
+        'recovers the file byte-for-byte from a 2160p rendition, downscaled on the way in',
+        { timeout: FIVE_MINUTES },
+        async () => {
+          // The rendition YouTube actually serves for these uploads is the 4K
+          // one, and the decoder shrinks it to the detail the grid needs before
+          // sampling — two pixels a block for `dense`, four for `wide`. This is
+          // the path that carries every real restore, and the only one where
+          // ffmpeg's scaler sits between the transcode and the sampler.
+          const served = join(dir, 'served-2160.webm');
+          await simulateYouTube(master, served, { crf });
+
+          const out = await mkdtemp(join(dir, 'out-2160-'));
+          const result = await decodeVideo(served, out);
+
+          assert.equal(result.sha256, sha256);
+          assert.equal(result.framesRead, 30);
+          assert.equal(result.layout, layout.id);
+          assert.ok(result.framesLost <= 6, `lost ${result.framesLost} frames, budget is 6`);
+        },
+      );
+
+      it(
         `fails below ${layout.minHeight}p instead of returning wrong bytes`,
         { timeout: FIVE_MINUTES },
         async () => {
@@ -105,3 +161,90 @@ for (const { layout, crf, below } of cases) {
     },
   );
 }
+
+/**
+ * Reading part of a file without pulling all of it back.
+ *
+ * This is what a preview of one entry in a bundle rests on: a byte range of
+ * the archive is a run of groups, a group is a second of video, and the frames
+ * say which group they belong to so the seek never has to be exact.
+ */
+describe(
+  'decoding a range of groups',
+  { skip: hasFfmpeg ? false : 'ffmpeg not installed' },
+  () => {
+    const layout = DENSE;
+    const GROUPS = 3;
+
+    let dir: string;
+    let served: string;
+    let stream: Buffer;
+
+    before(async () => {
+      dir = await mkdtemp(join(tmpdir(), 'isg-test-range-'));
+      const source = join(dir, 'payload.bin');
+      const master = join(dir, 'master.mp4');
+      served = join(dir, 'served.webm');
+
+      // Three whole groups minus the header, so the stream needs no padding
+      // and every group in it is one the test can name exactly.
+      const { stream: probeStream } = pack('payload.bin', Buffer.alloc(0));
+      const data = randomBytes(GROUPS * layout.groupBytes - probeStream.length);
+      await writeFile(source, data);
+      stream = pack('payload.bin', data).stream;
+      assert.equal(stream.length, GROUPS * layout.groupBytes);
+
+      await encodeFile(source, master, undefined, layout);
+      await simulateYouTube(master, served, { crf: 36, height: layout.minHeight });
+    });
+
+    after(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it('returns the middle group and nothing else', { timeout: FIVE_MINUTES }, async () => {
+      const { bytes, stats } = await decodeRange(served, 1, 1, layout);
+
+      assert.equal(bytes.length, layout.groupBytes);
+      assert.deepEqual(bytes, stream.subarray(layout.groupBytes, 2 * layout.groupBytes));
+      assert.equal(stats.groupsRecovered, 1);
+      assert.equal(stats.startGroup, 1);
+      // The point of the exercise: it stops rather than reading to the end.
+      assert.ok(
+        stats.framesRead < GROUPS * 30,
+        `read ${stats.framesRead} frames of ${GROUPS * 30} for one group`,
+      );
+    });
+
+    it('returns the whole stream when asked for every group', { timeout: FIVE_MINUTES }, async () => {
+      const { bytes } = await decodeRange(served, 0, GROUPS - 1, layout);
+      assert.deepEqual(bytes, stream);
+    });
+
+    it('refuses a range the video does not have', { timeout: FIVE_MINUTES }, async () => {
+      await assert.rejects(decodeRange(served, GROUPS + 4, GROUPS + 4, layout), /is not in/);
+    });
+
+    it('reads a range out of a video cut down to it', { timeout: FIVE_MINUTES }, async () => {
+      // What `yt-dlp --download-sections` hands back: a video whose timeline
+      // starts at the cut rather than at the start of the original. Seeking to
+      // "group 1" inside it would land a second past everything wanted, so the
+      // read starts from the beginning and lets the frames say where they are.
+      const cut = join(dir, 'cut.webm');
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn('ffmpeg', [
+          '-loglevel', 'error', '-y',
+          '-ss', '1', '-to', '3',
+          '-i', served,
+          '-c', 'copy',
+          cut,
+        ]);
+        proc.on('error', reject);
+        proc.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}`))));
+      });
+
+      const { bytes } = await decodeRange(cut, 1, 1, layout, false);
+      assert.deepEqual(bytes, stream.subarray(layout.groupBytes, 2 * layout.groupBytes));
+    });
+  },
+);

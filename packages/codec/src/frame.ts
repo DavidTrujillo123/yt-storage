@@ -128,19 +128,31 @@ export interface SampledFrame {
   confidence: Float32Array;
 }
 
-/** The nine sample points of every block, as flat pixel indices. */
+/** The sample points of every block, as flat pixel indices. */
 const TAPS = 9;
 
 /**
- * Where to read each block, for one frame size and layout.
+ * The same, for a block with no room to spread them.
  *
- * The nine taps of a block depend only on the resolution, and a video hands
- * back thousands of frames at the same one — so they are computed once and
- * kept. Doing it per frame meant a million rounds of float arithmetic,
- * Math.round and two clamps per frame, which measured as three quarters of the
- * whole decode.
+ * When `spread()` returns zero on both axes every one of the nine taps rounds
+ * to the same pixel, so the wide table holds nine copies of one index and the
+ * average is that pixel's own value. Storing it once is nine times less table
+ * to stream past the cache — 2 MiB rather than 18.7 MiB a frame on the dense
+ * grid — for exactly the same answer.
  */
-let tapCache: { key: string; offsets: Int32Array } | null = null;
+const SINGLE_TAP = 1;
+
+/**
+ * Where to read each block, for one frame size and layout, and how many reads
+ * a block takes.
+ *
+ * The taps of a block depend only on the resolution, and a video hands back
+ * thousands of frames at the same one — so they are computed once and kept.
+ * Doing it per frame meant a million rounds of float arithmetic, Math.round
+ * and two clamps per frame, which measured as three quarters of the whole
+ * decode.
+ */
+let tapCache: { key: string; offsets: Int32Array; taps: number } | null = null;
 
 /**
  * How far from a block's centre the outer taps sit, along one axis.
@@ -157,22 +169,29 @@ function spread(size: number): number {
   return Math.min(want, room);
 }
 
-function tapsFor(width: number, height: number, layout: Layout): Int32Array {
+function tapsFor(width: number, height: number, layout: Layout): { offsets: Int32Array; taps: number } {
   const key = `${layout.id}:${width}x${height}`;
-  if (tapCache && tapCache.key === key) return tapCache.offsets;
+  if (tapCache && tapCache.key === key) return tapCache;
 
   const { gridW, gridH } = layout;
   const bw = width / gridW;
   const bh = height / gridH;
   const dy = spread(bh);
   const dx = spread(bw);
+  const taps = dx === 0 && dy === 0 ? SINGLE_TAP : TAPS;
 
-  const offsets = new Int32Array(gridW * gridH * TAPS);
+  const offsets = new Int32Array(gridW * gridH * taps);
   let at = 0;
   for (let r = 0; r < gridH; r++) {
     for (let c = 0; c < gridW; c++) {
       const y = (r + 0.5) * bh;
       const x = (c + 0.5) * bw;
+      if (taps === SINGLE_TAP) {
+        const py = Math.min(height - 1, Math.max(0, Math.round(y)));
+        const px = Math.min(width - 1, Math.max(0, Math.round(x)));
+        offsets[at++] = py * width + px;
+        continue;
+      }
       for (const oy of [-dy, 0, dy]) {
         for (const ox of [-dx, 0, dx]) {
           const py = Math.min(height - 1, Math.max(0, Math.round(y + oy)));
@@ -183,8 +202,8 @@ function tapsFor(width: number, height: number, layout: Layout): Int32Array {
     }
   }
 
-  tapCache = { key, offsets };
-  return offsets;
+  tapCache = { key, offsets, taps };
+  return tapCache;
 }
 
 /**
@@ -198,22 +217,26 @@ export function sampleFrame(
   height: number,
   layout: Layout,
 ): SampledFrame {
-  const offsets = tapsFor(width, height, layout);
+  const { offsets, taps } = tapsFor(width, height, layout);
   const { cells } = scratchFor(layout);
   const { gridW, gridH, innerW, innerH, innerBits } = layout;
 
-  for (let i = 0, at = 0; i < cells.length; i++, at += TAPS) {
-    const sum =
-      img[offsets[at]] +
-      img[offsets[at + 1]] +
-      img[offsets[at + 2]] +
-      img[offsets[at + 3]] +
-      img[offsets[at + 4]] +
-      img[offsets[at + 5]] +
-      img[offsets[at + 6]] +
-      img[offsets[at + 7]] +
-      img[offsets[at + 8]];
-    cells[i] = sum / TAPS;
+  if (taps === SINGLE_TAP) {
+    for (let i = 0; i < cells.length; i++) cells[i] = img[offsets[i]];
+  } else {
+    for (let i = 0, at = 0; i < cells.length; i++, at += TAPS) {
+      const sum =
+        img[offsets[at]] +
+        img[offsets[at + 1]] +
+        img[offsets[at + 2]] +
+        img[offsets[at + 3]] +
+        img[offsets[at + 4]] +
+        img[offsets[at + 5]] +
+        img[offsets[at + 6]] +
+        img[offsets[at + 7]] +
+        img[offsets[at + 8]];
+      cells[i] = sum / TAPS;
+    }
   }
 
   // Recover reference levels from the checkerboard border.

@@ -32,17 +32,6 @@ export const FPS = 30;
 export const UPSCALE_W = WIDTH * 2; // 3840
 export const UPSCALE_H = HEIGHT * 2; // 2160
 
-/**
- * Pixels per block a rendition must still carry for the sampler to read it.
- *
- * Measured, not guessed: a 4-pixel block round-trips byte-identical served at
- * 900p — 3.3 pixels a block — and fails outright at 810p. Four is the nearest
- * whole number above that cliff, and it lands every layout on a standard
- * YouTube rung. Each layout states the height it needs from it, and the
- * decoder uses it to decide how far ffmpeg may downscale on the way in.
- */
-export const MIN_PIXELS_PER_BLOCK = 4;
-
 export const MAGIC = 0x49534756; // "ISGV"
 
 /** True when the checkerboard border block at (row, col) should be white. */

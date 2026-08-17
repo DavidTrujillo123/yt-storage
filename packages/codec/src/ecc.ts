@@ -46,12 +46,30 @@ function run(sources: number, targets: number, data: Buffer, parity: Buffer): Pr
 export async function encodeGroup(dataShards: Buffer[]): Promise<Buffer[]> {
   if (dataShards.length !== RS_K) throw new Error(`expected ${RS_K} data shards`);
   const size = shardSize(dataShards);
-
-  const data = Buffer.concat(dataShards);
-  const parity = Buffer.alloc(RS_M * size);
-  await run(ALL_DATA, ALL_PARITY, data, parity);
-
+  const parity = await encodeGroupBytes(Buffer.concat(dataShards), size);
   return Array.from({ length: RS_M }, (_, i) => parity.subarray(i * size, (i + 1) * size));
+}
+
+/**
+ * The same, for a group that is already one contiguous buffer.
+ *
+ * Which is how the encoder reads it: a group is `RS_K * shardBytes` of the
+ * stream in order, so slicing it into shards and concatenating them back
+ * together was 1.5 MiB copied per group — four hundred times over for a
+ * six-hundred-megabyte file — to rebuild bytes that were already adjacent.
+ *
+ * The parity comes back as one buffer too. The caller wants to write each
+ * shard as its own frame, and a subarray of this is that shard.
+ */
+export async function encodeGroupBytes(group: Buffer, shardBytes: number): Promise<Buffer> {
+  if (group.length !== RS_K * shardBytes) {
+    throw new Error(`a group of ${RS_K} shards of ${shardBytes} is not ${group.length} bytes`);
+  }
+  if (shardBytes % 8 !== 0) throw new Error(`shard size ${shardBytes} is not a multiple of 8`);
+
+  const parity = Buffer.alloc(RS_M * shardBytes);
+  await run(ALL_DATA, ALL_PARITY, group, parity);
+  return parity;
 }
 
 /** The one length every shard in a group must share, and a multiple of 8. */

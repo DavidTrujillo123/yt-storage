@@ -29,6 +29,12 @@ export interface SampledShard {
  * Two cores are left for ffmpeg and for the thread feeding the pipe, and the
  * ceiling is there because past a handful of workers the video is being
  * decoded no faster and the frames simply queue.
+ *
+ * The four was measured when every frame arrived at 2160p. Frames now arrive
+ * downscaled to what the grid needs, which made sampling cheaper rather than
+ * dearer — so ffmpeg is if anything more of the bottleneck than it was, and
+ * the number is left alone rather than raised on a guess. `CODEC_WORKERS`
+ * overrides it for anyone who wants to measure their own machine.
  */
 export function workerCount(): number {
   const asked = Number(process.env.CODEC_WORKERS);
