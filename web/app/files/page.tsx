@@ -21,17 +21,24 @@ const TONE: Record<FileStatus, 'ok' | 'busy' | 'bad'> = {
 const MAX_FILES = 500;
 
 /**
- * Not a server limit but a real one: the codec reads the whole file into
- * memory and keeps a few copies of it while encoding, so a multi-gigabyte
- * upload is accepted and then dies in the worker.
+ * What one upload may weigh, and it is disk that decides now rather than
+ * memory.
  *
- * Measured rather than guessed: packing a 400MB file peaks around 1.7GB, so
- * the ceiling is where four or five copies still fit in the memory a worker
- * container is given. It used to be 512MB, which was not the encoder's limit
- * at all — it was the browser's, back when every upload was read into the tab
- * twice before the request started. That is gone, so this is now the only cap.
+ * This used to be 2 GiB because the encoder read the whole file in and kept
+ * three copies of it, because ffmpeg's `-shortest` buffered gigabytes on its
+ * way to the muxer, and because the decoder assembled the whole file again to
+ * check its hash. All three are gone: measured on this machine, encoding a
+ * 1 GiB payload peaks at about 200 MiB of node and 860 MiB of ffmpeg, and
+ * decoding it peaks at about 520 MiB — the same figures a quarter-gigabyte
+ * payload produces, because none of them grow with the file any more.
+ *
+ * What does grow is scratch space. An encode writes a master roughly five
+ * times the payload beside the original, and verification later pulls a copy
+ * back down and decodes it, so budget something like seven times what is
+ * uploaded. This matches `MAX_UPLOAD_BYTES` on the server, which is the outer
+ * bound the API enforces.
  */
-const MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 5 * 1024 * 1024 * 1024;
 
 /** What the row is actually waiting on, in words rather than a state name. */
 function explain(file: StoredFile): string {
@@ -103,7 +110,7 @@ export default function FilesPage() {
     }
     if (total > MAX_TOTAL_BYTES) {
       setError(
-        `${formatBytes(total)} in one upload. The encoder holds the whole file in memory while it works, so keep it under ${formatBytes(MAX_TOTAL_BYTES)}.`,
+        `${formatBytes(total)} in one upload. An encode needs several times the payload in scratch space, so keep it under ${formatBytes(MAX_TOTAL_BYTES)}.`,
       );
       return;
     }
