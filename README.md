@@ -343,11 +343,20 @@ nothing but time.
 
 Restoring a file is the expensive direction — a whole video downloaded and
 decoded — so restored bytes are kept in `data/cache`, named by sha256, and
-re-served until evicted under `CACHE_MAX_BYTES`. Verification seeds it for free,
-since it has just decoded the file to check the hash. The cache is disposable
-and is never the copy of record: deleting the directory costs one slow read.
-Responses carry the hash as an `ETag`, so a browser that already has the bytes
-gets a 304 and no download happens at all.
+re-served until evicted under `CACHE_MAX_BYTES` (20 GiB by default; a bundle is
+easily half a gigabyte, so a budget that holds only two of them means every
+third preview pays for another download). Verification seeds it for free, since
+it has just decoded the file to check the hash. The cache is disposable and is
+never the copy of record: deleting the directory costs one slow read. Responses
+carry the hash as an `ETag`, so a browser that already has the bytes gets a 304
+and no download happens at all.
+
+Restores of the same file are also collapsed: a preview asks for a listing and
+then for one entry, and those used to be two independent round trips to YouTube
+— the second waiting on the per-account cookie lock until it timed out, then
+starting its own download. `RestoreService` keeps a map of restores in flight by
+file id, so the second caller waits on the first one's promise and watches the
+same progress bar.
 
 The account is chosen at upload time, not at ingest — an account can run out of
 quota, lose its cookies, or be deleted while a file sits in the queue.
@@ -355,7 +364,7 @@ quota, lose its cookies, or be deleted while a file sits in the queue.
 ## Many files at once
 
 An upload counts as one whatever it weighs, so **a hundred uploads a day** is the
-entire budget while one video holds ~15 GiB. Sending a folder of a thousand
+entire budget while one video holds ~60 GiB. Sending a folder of a thousand
 photos one file per upload is not slow, it is impossible.
 
 So several files in one request are written into a single tar — `writeTar` in
@@ -365,11 +374,19 @@ multer runs with `preservePath` so busboy does not strip it. Entry names are
 sanitised on the way in: they are client-controlled text that ends up in an
 archive somebody will extract.
 
-Reading one back does not mean downloading all of it. `GET /files/:id/entries`
-walks the 512-byte tar headers and seeks past the data, so listing a 10 GiB
-archive reads kilobytes, and `GET /files/:id/entries/:n/download` serves that
-entry as a byte range. The restore cache means the archive is pulled off YouTube
-once, no matter how many entries you then open.
+Reading one back does not mean downloading all of it, and it does not mean
+decoding all of it either. A byte range of the archive is a run of
+Reed-Solomon groups, and a group is exactly one second of video — so
+`GET /files/:id/entries/:n/download` fetches that many seconds with
+`yt-dlp --download-sections` and decodes only those groups. Listing walks the
+512-byte tar headers the same way, a window of groups at a time, and the result
+is kept on the row so it is never walked twice.
+
+Two things turn this off, and both fall back to restoring the whole archive
+rather than failing: a **gzipped container**, which has no middle to start
+decoding from, and a file whose bytes are already on disk or in the cache, which
+is cheaper than any of it. Fetched groups go into the same cache as whole files,
+under a `<sha256>.g<n>` name that can never be mistaken for the file itself.
 
 Every route below is under `/api`, except `GET /accounts/callback` — Google's
 redirect URI, which keeps its address.
@@ -389,8 +406,8 @@ redirect URI, which keeps its address.
 | `POST /files` | multipart upload; several parts become one archive |
 | `POST /files/import` | rebuild the catalogue from `{ accountId }`'s channel |
 | `GET /files` | your catalogue with status and progress |
-| `GET /files/:id/entries` | what is inside a bundle |
-| `GET /files/:id/entries/:n/download` | one file out of a bundle |
+| `GET /files/:id/entries` | what is inside a bundle; kept on the row once walked |
+| `GET /files/:id/entries/:n/download` | one file out of a bundle, as the few seconds of video that hold it |
 | `GET /files/:id/download` | local copy if present, otherwise fetch and decode |
 | `GET /files/:id/download?source=youtube` | always fetch and decode, even with a local copy |
 | `GET /files/:id/formats` | what YouTube is currently serving for that video |
@@ -398,13 +415,29 @@ redirect URI, which keeps its address.
 
 ## What it costs
 
+Measured on an M-series with 12 cores, on the `dense` grid that writes every new
+video, with incompressible random data:
+
 | | |
 |---|---|
-| Throughput | 1.29 GiB of data per hour of video |
-| Video bloat | ~4.4x the payload |
-| Encode speed | ~0.64 MiB/s |
-| Per video | ~15 GiB (YouTube's 12-hour cap) |
-| Per account per day | 100 uploads ≈ 1.5 TiB |
+| Throughput | 5.18 GiB of data per hour of video |
+| Video bloat | ~4.9x the payload |
+| Encode speed | ~4.6 MiB/s |
+| Decode speed | ~10 MiB/s |
+| Peak memory, either direction | ~1 GiB, whatever the file weighs |
+| Per video | ~60 GiB (YouTube's 12-hour cap) |
+| Per account per day | 100 uploads ≈ 6 TiB |
+
+Both directions are ffmpeg-bound — on an encode, everything this app's own code
+does is under a sixth of the wall clock — so the encoder's settings are where
+the time is, not the pixel loops. Uploading a master measured about ten times
+faster than producing one, which is why the master is written with a fast x264
+preset that costs seventeen percent in size.
+
+Videos written before the dense grid existed carry a quarter as much per frame
+and are read back the same way; `CODEC_LAYOUT=wide` still writes them.
+`CODEC_X264_PRESET` makes the opposite trade — a slower encode for a smaller
+upload — for anyone on a thin connection.
 
 Note that this is **not** the limit the YouTube Data API documents. The published
 model is a 10,000-unit daily budget with `videos.insert` at 1,600 units, which
@@ -421,11 +454,18 @@ made.
 
 ## Things worth knowing before trusting it
 
-- **Downloads must be 1080p or better.** The decoder needs ~3.3 pixels per 4-px
-  block; 900p round-trips cleanly and 810p fails outright. Every yt-dlp call
-  pins a minimum height with no fallback, because a silent drop to 720p would
-  produce an unrecoverable file. YouTube Studio's own download button often
-  serves 720p — do not use it to recover data.
+- **Downloads must be 1080p or better.** Both grids are measured against it:
+  `dense` recovers byte-identical data at 1080p and fails at 972p, `wide`
+  recovers at 900p and fails at 810p. Every yt-dlp call pins a minimum height
+  with no fallback below it, because a silent drop to 720p would produce an
+  unrecoverable file. YouTube Studio's own download button often serves 720p —
+  do not use it to recover data.
+- **Restores ask for 1080p, not the best rendition.** These uploads are 4K, so
+  "best" means 2160p and roughly four times the bytes for a signal that fits in
+  1080p — on a measured restore the download was fifteen of its twenty minutes.
+  If a 1080p rendition does not decode, the restore falls back to the best
+  available at or above the floor and remembers which height answered, so the
+  discovery is paid for once per file.
 - **Run it on a residential connection.** YouTube treats datacenter IP ranges
   very differently; from a VPS you will hit "Sign in to confirm you're not a
   bot" constantly, which means failed *retrievals*. A machine at home reachable
