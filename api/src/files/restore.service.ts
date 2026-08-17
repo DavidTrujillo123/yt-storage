@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CodecService, type DecodeResult } from '../codec/codec.service';
@@ -79,6 +79,20 @@ const PROBE_SECONDS = 10;
 
 /** Groups the probe asks the codec to read out of that section. */
 const PROBE_GROUPS = 8;
+
+/** Bytes on disk before the decoder is opened on a download still in flight. */
+const FIRST_BYTES_MIN = 1 << 20;
+const FIRST_BYTES_POLL_MS = 200;
+
+/**
+ * How long to wait for those bytes before starting anyway.
+ *
+ * Starting anyway is the right failure: the decoder will fail to probe an
+ * absent file and the attempt falls through to the next height, which is what
+ * would have happened had the download failed outright. Waiting forever is the
+ * only outcome that has no way back.
+ */
+const FIRST_BYTES_TIMEOUT_MS = 120_000;
 
 /**
  * How many groups a verification samples.
@@ -245,22 +259,38 @@ export class RestoreService {
         // attempt that just finished stays on screen while the next download
         // runs from zero, which is what "stuck at 100%" was.
         onPhase?.('downloading', null);
-        await this.ytdlp.download(
-          file.ytAccountId!,
-          file.videoId!,
-          videoPath,
-          (percent) => onPhase?.('downloading', percent),
-          { height },
-        );
-        // Said before the codec has a chance to say anything, because it may
-        // never get one: a decode over a container with no frame count reports
-        // no percentage, and the phase used to be announced only from inside
-        // that report. The download's finished bar therefore stayed on screen
-        // for the whole decode. The phase is known here regardless of whether a
-        // number ever arrives, so here is where it is announced.
-        onPhase?.('decoding', null);
         const expected = await this.expectedFrames(file);
-        const result = await this.codec.decode(
+        const done = join(outDir, `download.${attempt}.done`);
+        await rm(done, { force: true });
+
+        // The two phases run together. Measured in series they were 370 seconds
+        // of download and 201 of decode; the decoder was already streaming
+        // every recovered group to disk as it read, so the only thing keeping
+        // them apart was ffmpeg stopping at the end of a file yt-dlp had not
+        // finished writing. `--follow` makes it wait for `done` instead.
+        //
+        // Nothing about correctness moves: the container writer still checks
+        // the payload hash over all of it before the file takes its real name,
+        // so a download that dies half way fails here exactly as it failed
+        // before — just sooner.
+        const downloading = this.ytdlp
+          .download(
+            file.ytAccountId!,
+            file.videoId!,
+            videoPath,
+            (percent) => onPhase?.('downloading', percent),
+            { height },
+          )
+          // The sentinel is written whether the download succeeded or not. A
+          // failure that left the decoder waiting on a file nobody would ever
+          // finish is a hung restore, which is worse than a reported error.
+          .finally(() => writeFile(done, '').catch(() => undefined));
+
+        // Wait for the first fragments before opening the decoder: it probes
+        // the file for geometry, and a file that does not exist yet has none.
+        await this.firstBytes(videoPath, downloading);
+
+        const decoding = this.codec.decode(
           videoPath,
           outDir,
           (percent, frames) =>
@@ -273,7 +303,21 @@ export class RestoreService {
               percent ?? (expected ? Math.min(100, Math.round((frames / expected) * 100)) : null),
             ),
           file.layout,
+          done,
         );
+
+        // The download's error is the one worth reporting — expired cookies, a
+        // rendition that is not there — so it is awaited first. The decode is
+        // awaited too rather than abandoned, or a failed attempt would leave an
+        // ffmpeg running while the next height starts downloading over the same
+        // path.
+        try {
+          await downloading;
+        } catch (error) {
+          await decoding.catch(() => undefined);
+          throw error;
+        }
+        const result = await decoding;
 
         // What worked, and which grid it turned out to be. Both save the next
         // read a wrong guess; neither is ever trusted over what the frames say.
@@ -299,6 +343,30 @@ export class RestoreService {
     }
 
     throw new Error(`could not restore ${file.id}`);
+  }
+
+  /**
+   * Waits until the download has put enough on disk to be opened, or until it
+   * gives up.
+   *
+   * The decoder probes the file for its dimensions before reading a frame, and
+   * a fragmented MP4 carries that in its opening bytes — but only once they
+   * have landed. A megabyte is far more than the header needs and arrives in
+   * well under a second on any connection this app is usable on.
+   *
+   * Returns rather than throws when the download fails: the caller is already
+   * holding that promise and will report it properly. All this decides is when
+   * to stop waiting.
+   */
+  private async firstBytes(videoPath: string, downloading: Promise<unknown>): Promise<void> {
+    let failed = false;
+    void downloading.catch(() => (failed = true));
+
+    for (let waited = 0; waited < FIRST_BYTES_TIMEOUT_MS; waited += FIRST_BYTES_POLL_MS) {
+      const size = await stat(videoPath).then((info) => info.size).catch(() => 0);
+      if (size >= FIRST_BYTES_MIN || failed) return;
+      await new Promise((wake) => setTimeout(wake, FIRST_BYTES_POLL_MS));
+    }
   }
 
   /**
@@ -342,9 +410,54 @@ export class RestoreService {
       return [known, ...HEIGHTS.filter((height) => height !== known)];
     }
 
-    const probed = await this.probeOnce(file);
-    if (probed === undefined) return HEIGHTS;
-    return [probed, ...HEIGHTS.filter((height) => height !== probed)];
+    // The cache before the listing, so a second caller pays for neither.
+    const remembered = this.probed.get(file.id);
+    if (remembered) {
+      return [remembered.height, ...HEIGHTS.filter((height) => height !== remembered.height)];
+    }
+
+    const candidates = await this.byWeight(file);
+    const probed = await this.probeOnce(file, candidates);
+    if (probed === undefined) return candidates;
+    return [probed, ...candidates.filter((height) => height !== probed)];
+  }
+
+  /**
+   * Candidate heights ordered by what they actually weigh, cheapest first.
+   *
+   * The old order was "the floor, then the best", on the stated assumption that
+   * a smaller rendition is a smaller download. Measured on `poOMbFOWpgc`, that
+   * assumption is false and by a wide margin:
+   *
+   *     2160p  2.08 GB   37 Mbit/s   decodes
+   *     1440p  5.13 GB   92 Mbit/s   fails
+   *     1080p  3.97 GB   71 Mbit/s   fails
+   *
+   * The rendition this app was avoiding is the *smallest* of the three, and the
+   * one it asked for first costs nearly twice as much. Asking YouTube what each
+   * rung weighs is one metadata call with no download attached, so there is no
+   * reason to guess — and it also means a file whose 1080p rendition really is
+   * cheaper still gets it first, without the order being hardcoded either way.
+   *
+   * Falls back to the static order whenever the listing cannot be had: a
+   * cheaper first guess is worth having and never worth failing over.
+   */
+  private async byWeight(file: StoredFile): Promise<(number | null)[]> {
+    try {
+      const renditions = await this.ytdlp.renditions(file.ytAccountId!, file.videoId!);
+      const usable = renditions
+        .filter((rendition) => rendition.height >= MIN_DECODABLE_HEIGHT && rendition.bytes !== null)
+        .sort((a, b) => a.bytes! - b.bytes!);
+      if (usable.length === 0) return HEIGHTS;
+
+      // `null` stays on the end as the catch-all: it means "best at or above
+      // the floor", which is the only candidate that still works if YouTube
+      // starts serving a rung this listing did not mention.
+      return [...usable.map((rendition) => rendition.height), null];
+    } catch (error) {
+      this.log.warn(`could not weigh the renditions of ${file.id}: ${(error as Error).message}`);
+      return HEIGHTS;
+    }
   }
 
   /**
@@ -358,18 +471,59 @@ export class RestoreService {
    * Holding it in memory for the life of the process is the middle ground: the
    * second caller gets it free, and a restart forgets it.
    */
-  private async probeOnce(file: StoredFile): Promise<number | null | undefined> {
+  private async probeOnce(
+    file: StoredFile,
+    candidates: (number | null)[],
+  ): Promise<number | null | undefined> {
     const remembered = this.probed.get(file.id);
     if (remembered !== undefined) return remembered.height;
 
     const running = this.probing.get(file.id);
     if (running) return running;
 
-    const started = this.probeHeight(file).finally(() => this.probing.delete(file.id));
+    const started = this.probeHeight(file, candidates).finally(() => this.probing.delete(file.id));
     this.probing.set(file.id, started);
     const height = await started;
     if (height !== undefined) this.probed.set(file.id, { height });
     return height;
+  }
+
+  /**
+   * Whether ten seconds of one specific height reads back, and how long finding
+   * out took.
+   *
+   * The diagnostic half of the probe, exposed so a rendition table can be built
+   * against the real pipeline rather than against the lab. `layout.ts` records
+   * the dense grid as readable at 1080p, measured against a crf-based
+   * simulation; the live probe disagrees on real files. One of those is wrong
+   * about YouTube and this is how to find out which.
+   */
+  async probeAt(file: StoredFile, height: number | null): Promise<{ ok: boolean; seconds: number; error?: string }> {
+    const started = Date.now();
+    const dir = await mkdtemp(join(tmpdir(), 'yts-check-'));
+    try {
+      await this.ytdlp.download(file.ytAccountId!, file.videoId!, join(dir, 'probe.mp4'), undefined, {
+        height,
+        section: { fromSeconds: 0, toSeconds: PROBE_SECONDS },
+      });
+      await this.codec.decodeRange(
+        join(dir, 'probe.mp4'),
+        0,
+        PROBE_GROUPS - 1,
+        join(dir, 'probe.bin'),
+        file.layout,
+        true,
+      );
+      return { ok: true, seconds: Math.round((Date.now() - started) / 1000) };
+    } catch (error) {
+      return {
+        ok: false,
+        seconds: Math.round((Date.now() - started) / 1000),
+        error: (error as Error).message.split('\n')[0],
+      };
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 
   /**
@@ -384,11 +538,14 @@ export class RestoreService {
    * or the section could not be fetched at all. That is not a failure to
    * report, it is a reason to fall back to trying them properly.
    */
-  private async probeHeight(file: StoredFile): Promise<number | null | undefined> {
+  private async probeHeight(
+    file: StoredFile,
+    candidates: (number | null)[],
+  ): Promise<number | null | undefined> {
     const specs = await this.codec.specs().catch(() => null);
     if (!specs) return undefined;
 
-    for (const height of HEIGHTS) {
+    for (const height of candidates) {
       const dir = await mkdtemp(join(tmpdir(), 'yts-probe-'));
       const videoPath = join(dir, 'probe.mp4');
       const streamPath = join(dir, 'probe.bin');
@@ -654,7 +811,9 @@ export class RestoreService {
       // there it spends fifteen seconds finding out — then the restore it falls
       // back to spends fourteen more finding out the same thing. `probeOnce`
       // makes the two share one answer.
-      if (heightFromRow(file.restoreHeight) === undefined) await this.probeOnce(file);
+      if (heightFromRow(file.restoreHeight) === undefined) {
+        await this.probeOnce(file, await this.byWeight(file));
+      }
 
       const reader = new PartialReader(
         file,

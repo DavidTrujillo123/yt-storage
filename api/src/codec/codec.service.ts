@@ -162,8 +162,16 @@ export class CodecService {
     outputDir: string,
     onProgress?: (percent: number | null, framesRead: number) => void,
     layout?: string | null,
+    /**
+     * Start reading before the download has finished, and stop when this
+     * sentinel file appears. The two used to run in series — measured at 370
+     * seconds of download followed by 201 of decode — and the decoder was
+     * already streaming, so all that separated them was ffmpeg stopping at the
+     * end of a file somebody was still writing.
+     */
+    follow?: string,
   ): Promise<DecodeResult> {
-    this.log.log(`decoding ${videoPath}`);
+    this.log.log(`decoding ${videoPath}${follow ? ' as it downloads' : ''}`);
     // Frames read out of the frames the video holds. The total is absent when
     // the container does not carry one, and then there is no percentage to
     // report — the caller shows the phase without a bar rather than a made-up
@@ -177,7 +185,13 @@ export class CodecService {
     // download is exactly the case where `nb_frames` is N/A, so this was not
     // the rare path, it was the normal one.
     return this.run<DecodeResult>(
-      ['decode', videoPath, outputDir, ...(layout ? ['--layout', layout] : [])],
+      [
+        'decode',
+        videoPath,
+        outputDir,
+        ...(layout ? ['--layout', layout] : []),
+        ...(follow ? ['--follow', follow] : []),
+      ],
       (event) => {
         if (event.type !== 'progress' || typeof event.frames !== 'number') return;
         // The frame count goes out alongside the percentage so a caller that

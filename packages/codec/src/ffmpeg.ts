@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { open, stat } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { FPS, HEIGHT, UPSCALE_H, UPSCALE_W, WIDTH } from './geometry.ts';
 import type { Layout } from './layout.ts';
 
@@ -118,7 +120,18 @@ export async function probe(
   const proc = spawn('ffprobe', [
     '-v', 'error',
     '-select_streams', 'v:0',
-    '-show_entries', 'stream=width,height,nb_frames,duration',
+    // Duration is asked of the *container*, not of the stream, and that is the
+    // whole of why a decode used to report no progress at all. yt-dlp writes a
+    // fragmented MP4 under `--no-part`, and fMP4 carries neither `nb_frames`
+    // nor a stream duration — both come back N/A on every download this app
+    // makes. The container knows: measured on a real restore, `stream=duration`
+    // was N/A while `format=duration` was 446.000000, which at 30 fps is the
+    // 13,380-frame denominator a progress bar was missing.
+    //
+    // Only one `duration` is requested, so there is no second one to collide
+    // with it in the map below and no dependence on which section ffprobe
+    // prints first.
+    '-show_entries', 'stream=width,height,nb_frames:format=duration',
     // Named fields, not positional ones. `csv=p=0` omits what a stream does
     // not carry instead of leaving a hole, so a video with no `nb_frames` —
     // every remuxed download — handed its duration to whoever read the third
@@ -175,11 +188,76 @@ export interface RawFrames {
  * on, and going through an intermediate frame Buffer would be a second copy of
  * every pixel for nothing.
  */
+/**
+ * Reads a file that is still being written, ending only when it is finished.
+ *
+ * A restore used to download the whole video and only then start decoding —
+ * two costs in series, measured at 370 seconds and 201. They do not have to be:
+ * the decoder is already streaming, it flushes each recovered group to disk as
+ * it passes, and the only thing tying it to a completed download was ffmpeg
+ * stopping at whatever end-of-file it found.
+ *
+ * yt-dlp writes its output in order under `--no-part`, and the fragmented MP4
+ * it produces carries its metadata up front — measured mid-download, ffprobe
+ * reported the full 446-second duration off a file that was a third there. So
+ * the prefix of the file is always a valid stream; it is simply short. This
+ * follows it: hand the bytes on as they land, sleep when there are none, and
+ * finish once the writer says it is done *and* there is nothing left to read.
+ *
+ * `donePath` is how the writer says so. It is a sentinel file rather than a
+ * signal or a socket because the two sides are separate processes — the codec
+ * runs as a CLI child — and a file appearing is the smallest thing that crosses
+ * that boundary without inventing a protocol.
+ */
+export function followFile(path: string, donePath: string): Readable {
+  let offset = 0;
+  let finishing = false;
+
+  return new Readable({
+    highWaterMark: 1 << 20,
+    async read() {
+      for (;;) {
+        let size = 0;
+        try {
+          size = (await stat(path)).size;
+        } catch {
+          // The file may not exist for the first moments of a download.
+        }
+
+        if (size > offset) {
+          const handle = await open(path, 'r');
+          try {
+            const length = Math.min(size - offset, 1 << 20);
+            const buffer = Buffer.allocUnsafe(length);
+            const { bytesRead } = await handle.read(buffer, 0, length, offset);
+            offset += bytesRead;
+            this.push(buffer.subarray(0, bytesRead));
+          } finally {
+            await handle.close();
+          }
+          return;
+        }
+
+        // Caught up. Only stop once the writer has finished *and* a last look
+        // found nothing new — checked in that order, so bytes written between
+        // the two checks are never dropped.
+        if (finishing) {
+          this.push(null);
+          return;
+        }
+        finishing = await stat(donePath).then(() => true).catch(() => false);
+        if (!finishing) await new Promise((wake) => setTimeout(wake, 200));
+      }
+    },
+  });
+}
+
 export async function openRawFrames(
   path: string,
   layout: Layout | null = null,
   limit?: number,
   startSeconds?: number,
+  follow?: string,
 ): Promise<RawFrames> {
   const source = await probe(path);
 
@@ -209,19 +287,35 @@ export async function openRawFrames(
     // in its header. Position is read from the frames, never counted from the
     // start of the pipe.
     ...(startSeconds ? ['-ss', String(startSeconds)] : []),
-    '-i', path,
+    // Following means reading a file nobody has finished writing, which a path
+    // cannot express — ffmpeg would stop at whatever end it found. The bytes
+    // arrive on stdin instead, from a reader that waits rather than ends. The
+    // geometry above still came from probing the file, which works from its
+    // first fragment on.
+    '-i', follow ? 'pipe:0' : path,
     ...(shrink ? ['-vf', `scale=${wantW}:${wantH}:flags=area`] : []),
     ...(limit ? ['-frames:v', String(limit)] : []),
     '-f', 'rawvideo',
     '-pix_fmt', 'gray',
     'pipe:1',
-  ], { stdio: ['ignore', 'pipe', 'inherit'] });
+  ], { stdio: [follow ? 'pipe' : 'ignore', 'pipe', 'inherit'] });
+
+  if (follow) {
+    const feed = followFile(path, follow);
+    feed.pipe(proc.stdin!);
+    // ffmpeg exiting first — on `-frames:v`, or on a stream it will not read —
+    // leaves the follower writing into a closed pipe. Neither end is an error
+    // worth failing a decode over; the frames already read are what count.
+    proc.stdin!.on('error', () => feed.destroy());
+  }
 
   return {
     width,
     height,
     frameSize: width * height,
-    chunks: proc.stdout,
+    // Always a pipe: the stdio array above only ever varies at index 0, but a
+    // computed tuple loses that for the type checker.
+    chunks: proc.stdout!,
     close: () => void proc.kill('SIGKILL'),
   };
 }
@@ -232,12 +326,14 @@ export async function* readFrames(
   layout: Layout | null = null,
   limit?: number,
   startSeconds?: number,
+  follow?: string,
 ): AsyncGenerator<{ data: Buffer; width: number; height: number }> {
   const { width, height, frameSize, chunks, close } = await openRawFrames(
     path,
     layout,
     limit,
     startSeconds,
+    follow,
   );
 
   let pending: Buffer[] = [];

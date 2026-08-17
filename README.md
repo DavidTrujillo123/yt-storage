@@ -460,12 +460,35 @@ made.
   with no fallback below it, because a silent drop to 720p would produce an
   unrecoverable file. YouTube Studio's own download button often serves 720p —
   do not use it to recover data.
-- **Restores ask for 1080p, not the best rendition.** These uploads are 4K, so
-  "best" means 2160p and roughly four times the bytes for a signal that fits in
-  1080p — on a measured restore the download was fifteen of its twenty minutes.
-  If a 1080p rendition does not decode, the restore falls back to the best
-  available at or above the floor and remembers which height answered, so the
-  discovery is paid for once per file.
+- **Restores ask for the *cheapest* rendition, which is not the smallest one.**
+  This used to ask for 1080p on the reasoning that a smaller rendition is a
+  smaller download. Measured against YouTube on `poOMbFOWpgc`, a 657 MiB bundle
+  written with the dense grid, that reasoning is simply false:
+
+  | height | codec | bytes | bitrate | decodes |
+  |---|---|---|---|---|
+  | 2160p | vp9 | 2.08 GB | 37 Mbit/s | **yes** |
+  | 1440p | vp9 | 5.13 GB | 92 Mbit/s | no |
+  | 1080p | vp9 | 3.97 GB | 71 Mbit/s | no |
+
+  The rendition the app was avoiding is the smallest of the three, and the one
+  it asked for first costs nearly twice as much. A restore now lists what each
+  rung weighs — one metadata call, no download — and tries them cheapest first.
+
+- **The dense grid needs its native height; there is no bitrate cliff.** The
+  1080p rendition of that file carries *twice* the bitrate of the 2160p one and
+  still will not decode, and 1440p carries two and a half times and fails too.
+  Compression is not what breaks it — resampling is. A dense block is 2 canvas
+  pixels, so it is 4 physical pixels at 2160p, 2.67 at 1440p where block edges
+  stop landing on pixel edges at all, and 2 at 1080p where YouTube's downscaling
+  filter spreads each block across its neighbours before anything is quantised.
+  The `wide` grid, at 4 canvas pixels a block, keeps 4 physical pixels at 1080p
+  and does read back there — which is exactly the pattern the stored rows show.
+
+  The measurements in `layout.ts` are against `simulateYouTube`, which
+  downscales the master once. YouTube encodes at 4K and derives the lower rungs
+  from its own intermediate, so the lab is a generation short and its 1080p
+  figure for `dense` does not hold in production.
 - **The height is settled on ten seconds of video, not on the whole file.**
   Measured on `poOMbFOWpgc`, a 689 MB bundle: the 1080p rendition downloaded
   3.97 GB over 11 min 52 s and then failed to decode, and only then did the

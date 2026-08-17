@@ -117,10 +117,17 @@ async function main(): Promise<void> {
     // which is a second ffmpeg reading frames at native resolution before the
     // real read starts; a wrong id would fail on the first frame's magic, so
     // this is a shortcut and never a claim the decoder has to trust.
-    const { value: layoutArg, rest } = takeOption(args, '--layout');
+    const { value: layoutArg, rest: afterLayout } = takeOption(args, '--layout');
+    // Decode a video that is still arriving, stopping when this file appears.
+    // A sentinel rather than a signal because the writer is another process
+    // entirely — the app downloads, this decodes — and a file showing up is the
+    // smallest thing that crosses that line.
+    const { value: follow, rest } = takeOption(afterLayout, '--follow');
     const hint: Layout | undefined = layoutArg ? layoutById(layoutArg) : undefined;
     const [video, outDir = '.'] = rest;
-    if (!video) throw new Error('usage: decode <video> [output-dir] [--layout <id>]');
+    if (!video) {
+      throw new Error('usage: decode <video> [output-dir] [--layout <id>] [--follow <sentinel>]');
+    }
 
     await mkdir(outDir, { recursive: true });
     const stats = await decodeVideo(video, outDir, (n, total) => {
@@ -130,7 +137,7 @@ async function main(): Promise<void> {
         { type: 'progress', frames: n, total },
         total ? `reading frame ${n}/${total}` : `reading frame ${n}`,
       );
-    }, hint);
+    }, hint, follow);
 
     if (json) {
       console.log(JSON.stringify(stats));

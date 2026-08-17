@@ -7,6 +7,28 @@ import { AccountsService } from '../accounts/accounts.service';
 interface Format {
   height?: number | null;
   vcodec?: string;
+  filesize?: number | null;
+  filesize_approx?: number | null;
+  /** Video bitrate in kbit/s, as yt-dlp reports it. */
+  vbr?: number | null;
+  tbr?: number | null;
+}
+
+/**
+ * One rendition YouTube is serving, with what it costs to fetch.
+ *
+ * The bytes are the point. A restore's wall clock is almost entirely the
+ * download, so "which height decodes" is only half the question — the other
+ * half is how much each one weighs, and until now that number was parsed out of
+ * yt-dlp's answer and thrown away.
+ */
+export interface Rendition {
+  height: number;
+  codec: string;
+  /** Null when yt-dlp offers neither an exact size nor an estimate. */
+  bytes: number | null;
+  /** Kbit/s, which is what a per-resolution cap would show up in. */
+  bitrate: number | null;
 }
 
 export interface DownloadOptions {
@@ -192,14 +214,43 @@ export class YtdlpService {
    * "Requested format is not available" and never reports anything.
    */
   async availableHeights(accountId: string, videoId: string): Promise<number[]> {
+    return (await this.renditions(accountId, videoId)).map((rendition) => rendition.height);
+  }
+
+  /**
+   * Every video rendition YouTube is serving, largest first, with its weight.
+   *
+   * The same yt-dlp call `availableHeights` always made — it asks for the whole
+   * info JSON and used to keep one field out of it. What a restore actually
+   * costs is bytes, so the sizes and bitrates come out too: they are what turns
+   * "1080p does not decode" from a fact into an explanation, by showing whether
+   * the smaller rendition is starved of bitrate or merely smaller.
+   *
+   * The biggest format at each height wins. YouTube serves several codecs per
+   * rung and the app's format selector takes the best, so reporting the worst
+   * would describe a download nobody makes.
+   */
+  async renditions(accountId: string, videoId: string): Promise<Rendition[]> {
     const { stdout } = await this.accounts.withCookies(accountId, (cookiePath) =>
       this.run(['--cookies', cookiePath, '-J', '-f', 'bestvideo*', this.url(videoId)]),
     );
     const info = JSON.parse(stdout) as { formats?: Format[] };
-    const heights = (info.formats ?? [])
-      .filter((f) => f.vcodec && f.vcodec !== 'none' && typeof f.height === 'number')
-      .map((f) => f.height as number);
-    return [...new Set(heights)].sort((a, b) => b - a);
+
+    const best = new Map<number, Rendition>();
+    for (const format of info.formats ?? []) {
+      if (!format.vcodec || format.vcodec === 'none' || typeof format.height !== 'number') continue;
+      const bytes = format.filesize ?? format.filesize_approx ?? null;
+      const candidate: Rendition = {
+        height: format.height,
+        codec: format.vcodec,
+        bytes,
+        bitrate: format.vbr ?? format.tbr ?? null,
+      };
+      const held = best.get(format.height);
+      if (!held || (bytes ?? 0) > (held.bytes ?? 0)) best.set(format.height, candidate);
+    }
+
+    return [...best.values()].sort((a, b) => b.height - a.height);
   }
 
   /**

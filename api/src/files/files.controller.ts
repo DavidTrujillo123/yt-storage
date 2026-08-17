@@ -105,15 +105,41 @@ export class FilesController {
    * through `withCookies`, so it takes the same lock as everything else.
    */
   @Get(':id/formats')
-  async formats(@CurrentUser() user: User, @Param('id') id: string) {
+  async formats(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Query('probe') probe?: string,
+  ) {
     const file = await this.files.get(user.id, id);
     if (!file.videoId || !file.ytAccountId) {
       throw new BadRequestException(`file is ${file.status}; it has no video yet`);
     }
+
+    const renditions = await this.ytdlp.renditions(file.ytAccountId, file.videoId);
+
+    // `?probe=1` turns a listing into a measurement: ten seconds fetched at
+    // each rung the decoder could in principle read, and whether it decodes.
+    // Only at or above the floor — the smaller rungs cannot be read by any
+    // grid, so testing them would spend downloads to confirm the obvious — and
+    // one at a time, because these all take the same cookie lock and the point
+    // of the table is the answer, not the speed of getting it.
+    const checked: Record<string, { ok: boolean; seconds: number; error?: string }> = {};
+    if (probe) {
+      for (const rendition of renditions) {
+        if (rendition.height < MIN_DECODABLE_HEIGHT) continue;
+        checked[String(rendition.height)] = await this.restore.probeAt(file, rendition.height);
+      }
+    }
+
     return {
       videoId: file.videoId,
       minimum: MIN_DECODABLE_HEIGHT,
-      heights: await this.ytdlp.availableHeights(file.ytAccountId, file.videoId),
+      layout: file.layout,
+      size: file.size,
+      restoreHeight: file.restoreHeight,
+      heights: renditions.map((rendition) => rendition.height),
+      renditions,
+      ...(probe ? { decodes: checked } : {}),
     };
   }
 

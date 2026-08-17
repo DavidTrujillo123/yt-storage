@@ -41,12 +41,19 @@ const SEEK_SAFETY_SECONDS = 2;
  * bytes that fail the magic long before the CRC gets a say. The first frames
  * of a damaged video may fail for every layout, hence more than one attempt.
  */
-export async function detectLayout(videoPath: string): Promise<Layout> {
+export async function detectLayout(videoPath: string, follow?: string): Promise<Layout> {
   const candidates = [...LAYOUTS];
 
+  // Following matters here as much as it does for the real read. Detection
+  // needs only a handful of frames, but on a download still in flight there may
+  // not be a handful yet — measured against a file a twelfth written, ffmpeg
+  // reported "no readable frames found" and the whole restore failed on a video
+  // that was perfectly good. Waiting for the frames costs nothing: `limit` ends
+  // the read the moment enough of them arrive.
+  //
   // Read at native resolution: the frames have to stay sampleable for every
   // candidate, and each wants a different amount of detail kept.
-  for await (const frame of readFrames(videoPath, null, DETECT_FRAMES)) {
+  for await (const frame of readFrames(videoPath, null, DETECT_FRAMES, undefined, follow)) {
     for (const layout of candidates) {
       const parsed = decodeFrame(sampleFrame(frame.data, frame.width, frame.height, layout), layout);
       if (parsed) return layout;
@@ -231,6 +238,7 @@ async function readGroups(
   startSeconds?: number,
   enough?: (stats: Counters) => boolean,
   flush?: Flush,
+  follow?: string,
 ): Promise<{ groups: Groups; stats: Counters }> {
   const groups: Groups = new Map();
   const stats = counters();
@@ -240,7 +248,8 @@ async function readGroups(
   // frame size comes from the open stream, which may be scaling the video
   // down, and never from the file's own dimensions.
   const workers = workerCount();
-  const raw = workers > 1 ? await openRawFrames(videoPath, layout, undefined, startSeconds) : null;
+  const raw =
+    workers > 1 ? await openRawFrames(videoPath, layout, undefined, startSeconds, follow) : null;
   const pool = raw
     ? await SamplePool.open(raw.frameSize, workers, layout).catch(() => null)
     : null;
@@ -261,6 +270,14 @@ export async function decodeVideo(
   outputDir: string,
   onProgress?: (frames: number, total: number | null) => void,
   hint?: Layout,
+  /**
+   * Decode the video while it is still downloading, finishing when this
+   * sentinel path appears. Nothing else changes: groups already went out to
+   * disk as the read passed them, and the hash is still checked over all of it
+   * before the file takes its name — so a download that dies half way fails
+   * here exactly as it would have failed afterwards.
+   */
+  follow?: string,
 ): Promise<DecodeStats> {
   // Asked once, before the read, so progress has a denominator. ffprobe on a
   // local file is milliseconds against a decode measured in minutes.
@@ -271,7 +288,7 @@ export async function decodeVideo(
   // and the row that recorded it at encode time is a cheaper answer than the
   // detection pass — but detection stays the fallback, because every video
   // written before the column existed has nothing to say.
-  const layout = hint ?? (await detectLayout(videoPath));
+  const layout = hint ?? (await detectLayout(videoPath, follow));
 
   // Groups go out to the file as the read passes them rather than piling up
   // until the end. The old shape held every recovered shard, concatenated them
@@ -297,7 +314,16 @@ export async function decodeVideo(
 
   let stats: Counters;
   try {
-    const read = await readGroups(videoPath, layout, total, onProgress, undefined, undefined, flush);
+    const read = await readGroups(
+      videoPath,
+      layout,
+      total,
+      onProgress,
+      undefined,
+      undefined,
+      flush,
+      follow,
+    );
     stats = read.stats;
 
     if (read.groups.size === 0 && nextGroup === 0) throw new Error('no readable frames found');
