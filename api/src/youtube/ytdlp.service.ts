@@ -145,8 +145,42 @@ export class YtdlpService {
    * so this is the number that matters most in this file.
    */
   private get fragments(): string {
+    return String(Math.max(MIN_FRAGMENTS, Math.min(this.ceiling, this.configuredFragments)));
+  }
+
+  /** What the operator asked for, before anything YouTube has said about it. */
+  private get configuredFragments(): number {
     const asked = Number(process.env.YTDLP_CONCURRENT_FRAGMENTS);
-    return String(Number.isFinite(asked) && asked > 0 ? Math.floor(asked) : 16);
+    return Number.isFinite(asked) && asked > 0 ? Math.floor(asked) : DEFAULT_FRAGMENTS;
+  }
+
+  /**
+   * The current cap, which only YouTube moves.
+   *
+   * Raising concurrency is the one lever that acts directly on a restore's wall
+   * clock — a download measured as essentially all of it — but the same lever
+   * is what earns a bot check, and a bot check is a *failed* retrieval. So the
+   * asked-for number is a ceiling to aim at rather than a promise: every
+   * rate-limited failure halves it, and it climbs back one step per success so
+   * a single bad afternoon does not pin the instance at four forever.
+   */
+  private ceiling = Number.POSITIVE_INFINITY;
+
+  /** Called when YouTube answers a download with "slow down". */
+  private backOff(): void {
+    const from = Math.min(this.ceiling, this.configuredFragments);
+    this.ceiling = Math.max(MIN_FRAGMENTS, Math.floor(from / 2));
+    this.log.warn(
+      `YouTube pushed back on the request rate; concurrent fragments capped at ${this.ceiling} ` +
+        `(asked for ${this.configuredFragments})`,
+    );
+  }
+
+  /** Called when one completes without complaint. */
+  private easeUp(): void {
+    if (this.ceiling >= this.configuredFragments) return;
+    this.ceiling = Math.min(this.configuredFragments, this.ceiling + FRAGMENT_STEP);
+    this.log.log(`raising concurrent fragments back to ${this.ceiling}`);
   }
 
   /**
@@ -245,8 +279,18 @@ export class YtdlpService {
               if (percent !== undefined) onProgress(percent);
             }),
         );
+        // One clean download is the only evidence that the current rate is
+        // being tolerated, so it is the only thing allowed to raise the cap.
+        this.easeUp();
       } catch (error) {
         const message = (error as Error).message;
+        // Before the session check, not after it, and deliberately not
+        // exclusive with it. "Sign in to confirm you're not a bot" is both
+        // wordings at once — it is what a signed-out client is asked and what
+        // a client asking too fast is asked — and there is no way to tell them
+        // apart from here. Slowing down costs a slower restore; not slowing
+        // down costs failed ones.
+        if (looksRateLimited(message)) this.backOff();
         if (looksSignedOut(message)) {
           // The jar no longer authenticates, and the video being private is
           // only how that shows up: YouTube answers a signed-out request for
@@ -303,6 +347,21 @@ export class YtdlpService {
 /** Marks the lines written by --progress-template, so the rest can be ignored. */
 const PROGRESS_PREFIX = 'yts-progress';
 
+/** Fragments fetched at once when nothing says otherwise. */
+const DEFAULT_FRAGMENTS = 16;
+
+/**
+ * The floor the back-off will not go under.
+ *
+ * One fragment at a time is yt-dlp's own default and it is what made a restore
+ * take a quarter of an hour in the first place. Four is slow, not broken —
+ * somewhere to sit out a rate limit rather than somewhere to end up.
+ */
+const MIN_FRAGMENTS = 4;
+
+/** How fast the cap climbs back after a clean download. */
+const FRAGMENT_STEP = 4;
+
 /**
  * The percentage on a progress line: a number, null while the total is still
  * unknown, and undefined for any other line yt-dlp prints.
@@ -334,6 +393,25 @@ function looksSignedOut(message: string): boolean {
     message.includes('Private video') ||
     message.includes('Sign in to confirm') ||
     message.includes('This video is available to this channel')
+  );
+}
+
+/**
+ * Whether YouTube is pushing back on the *rate* rather than on the session.
+ *
+ * The two overlap — "Sign in to confirm you're not a bot" is what a client
+ * asking too fast gets, and also what a signed-out one gets — which is why the
+ * caller checks the session first and only reaches this once the cookies are
+ * known good. Everything here is YouTube saying "slow down" in one of the
+ * several wordings it uses for it.
+ */
+export function looksRateLimited(message: string): boolean {
+  return (
+    message.includes('HTTP Error 429') ||
+    message.includes('Too Many Requests') ||
+    message.includes("Sign in to confirm you're not a bot") ||
+    message.includes('The download speed is below') ||
+    message.includes('Got error: HTTPSConnectionPool')
   );
 }
 

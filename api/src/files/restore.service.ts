@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CodecService, type DecodeResult } from '../codec/codec.service';
-import { YtdlpService } from '../youtube/ytdlp.service';
+import { CookiesExpiredError, YtdlpService } from '../youtube/ytdlp.service';
 import { MIN_DECODABLE_HEIGHT } from '../youtube/constants';
 import { FilesService } from './files.service';
 import { RestoreCache } from './restore-cache';
@@ -37,6 +37,95 @@ export interface RestoredBytes {
  * floor", which is what this did unconditionally before.
  */
 const HEIGHTS: (number | null)[] = [MIN_DECODABLE_HEIGHT, null];
+
+/**
+ * How "the best rendition available" is written down on a row.
+ *
+ * Everywhere else that height is `null`, which is also what a row says when
+ * nothing has been recorded — and those two must not be the same value. They
+ * were, and the cost was exact: `poOMbFOWpgc` does not decode at 1080p, so
+ * every read of it downloaded 3.97 GB over eleven minutes and fifty-two
+ * seconds, failed, and only then started the download it was always going to
+ * need. Zero is not a served height, so it can never collide with a real one.
+ */
+export const BEST_HEIGHT = 0;
+
+/**
+ * The row's stored answer as a height the downloader understands.
+ *
+ * Three states, and they are three on purpose: a number is that rung, `null` is
+ * the best available, and `undefined` is a row nothing has read back yet. The
+ * bug this replaces came from having only two.
+ */
+export function heightFromRow(stored: number | null): number | null | undefined {
+  if (stored === null) return undefined;
+  return stored === BEST_HEIGHT ? null : stored;
+}
+
+/** The inverse: a height as the row stores it. */
+export function heightForRow(height: number | null): number {
+  return height ?? BEST_HEIGHT;
+}
+
+/**
+ * Seconds of video a height probe fetches before committing to a full download.
+ *
+ * Ten seconds is eight groups on the dense grid — enough that a rendition which
+ * cannot be read fails here rather than after eleven minutes, and few enough
+ * that being wrong costs about twelve seconds. Measured: the section fetch and
+ * its decode ran 04:21:02 to 04:21:14 on the live instance.
+ */
+const PROBE_SECONDS = 10;
+
+/** Groups the probe asks the codec to read out of that section. */
+const PROBE_GROUPS = 8;
+
+/**
+ * How many groups a verification samples.
+ *
+ * Each one is its own yt-dlp section fetch, measured at roughly twelve seconds,
+ * so eight is about a minute and a half against the fifteen or more a full
+ * download costs. The number is a trade and not a discovery: more samples do
+ * not make this a proof, they only narrow the gap damage has to hide in.
+ */
+const SAMPLE_GROUPS = 8;
+
+/** What a sampled verification learned, for the caller to check against the row. */
+export interface SampledCheck {
+  /** The name the container header carries, which is what the bytes say they are. */
+  name: string;
+  /**
+   * Bytes of *stream*, which is not the file's size when the container gzipped
+   * it — the header records what was stored, and nothing anywhere records the
+   * original length except the hash. Comparing this to `StoredFile.size`
+   * without checking `gzipped` first rejects a perfectly good file: measured on
+   * `x6LtjqFWP8Q`, 637,111,296 bytes of tar stored as 636,555,008 compressed.
+   */
+  payloadLength: number;
+  gzipped: boolean;
+  /** The payload hash the header claims. Not recomputed here — nothing read all of it. */
+  sha256: string;
+  groupsChecked: number;
+  totalGroups: number;
+}
+
+/**
+ * `count` group indices spread across `total`, first and last included.
+ *
+ * Exported for the test: the ends are where a truncated upload and a bad header
+ * show up, so an implementation that drifts off them fails quietly rather than
+ * loudly.
+ */
+export function spreadGroups(total: number, count: number): number[] {
+  if (total <= count) return Array.from({ length: total }, (_, index) => index);
+
+  const picked = new Set<number>([0, total - 1]);
+  const step = (total - 1) / (count - 1);
+  for (let index = 1; index < count - 1; index++) {
+    picked.add(Math.round(index * step));
+  }
+  return [...picked].sort((a, b) => a - b);
+}
 
 /**
  * How many groups a partial read fetches when it wants one.
@@ -77,6 +166,19 @@ export class RestoreService {
 
   /** The same, for listings — which are their own kind of expensive. */
   private readonly listing = new Map<string, Promise<TarItem[]>>();
+
+  /**
+   * Heights the probe has settled, by file id, for the life of the process.
+   *
+   * Not the database: `restoreHeight` is written only by something that decoded
+   * the file, and the next read trusts it without checking. A probe is ten
+   * seconds of evidence, which is enough to order the candidates and not enough
+   * to be believed outright.
+   */
+  private readonly probed = new Map<string, { height: number | null }>();
+
+  /** Probes in flight, so two callers arriving together run one. */
+  private readonly probing = new Map<string, Promise<number | null | undefined>>();
 
   constructor(
     private readonly files: FilesService,
@@ -122,10 +224,11 @@ export class RestoreService {
   /**
    * Downloads the video and decodes it, trying each height in turn.
    *
-   * Public because verification runs the same round trip for a different
-   * reason, and the two must not disagree about which rendition a restore
-   * uses: the point of verifying is proving that the path a later read will
-   * take actually works.
+   * Verification no longer comes through here — it samples instead, which is
+   * most of why storing a file got faster — but the two still have to agree
+   * about which rendition to ask for, because the point of verifying is proving
+   * that the path a later read will take actually works. `heightOrder` is what
+   * they share now.
    */
   async fetchAndDecode(
     file: StoredFile,
@@ -133,15 +236,15 @@ export class RestoreService {
     outDir: string,
     onPhase?: (phase: 'downloading' | 'decoding', percent: number | null) => void,
   ): Promise<{ result: DecodeResult; height: number | null }> {
-    // The height that worked last time first, then the rest. A file that
-    // genuinely needs 2160p should pay for the discovery once.
-    const heights = file.restoreHeight
-      ? [file.restoreHeight, ...HEIGHTS.filter((h) => h !== file.restoreHeight)]
-      : HEIGHTS;
+    const heights = await this.heightOrder(file);
 
     for (const [attempt, height] of heights.entries()) {
       const last = attempt === heights.length - 1;
       try {
+        // Each attempt starts its own bar. Without this the percent from the
+        // attempt that just finished stays on screen while the next download
+        // runs from zero, which is what "stuck at 100%" was.
+        onPhase?.('downloading', null);
         await this.ytdlp.download(
           file.ytAccountId!,
           file.videoId!,
@@ -149,17 +252,36 @@ export class RestoreService {
           (percent) => onPhase?.('downloading', percent),
           { height },
         );
+        // Said before the codec has a chance to say anything, because it may
+        // never get one: a decode over a container with no frame count reports
+        // no percentage, and the phase used to be announced only from inside
+        // that report. The download's finished bar therefore stayed on screen
+        // for the whole decode. The phase is known here regardless of whether a
+        // number ever arrives, so here is where it is announced.
+        onPhase?.('decoding', null);
+        const expected = await this.expectedFrames(file);
         const result = await this.codec.decode(
           videoPath,
           outDir,
-          (percent) => onPhase?.('decoding', percent),
+          (percent, frames) =>
+            onPhase?.(
+              'decoding',
+              // The codec's own percentage when the container carried a frame
+              // count, and one worked out from the file's size when it did not
+              // — which for a remuxed download is most of the time, and is why
+              // a three-minute decode showed no bar at all.
+              percent ?? (expected ? Math.min(100, Math.round((frames / expected) * 100)) : null),
+            ),
           file.layout,
         );
 
         // What worked, and which grid it turned out to be. Both save the next
         // read a wrong guess; neither is ever trusted over what the frames say.
-        await this.files.update(file.id, { restoreHeight: height, layout: result.layout });
-        file.restoreHeight = height;
+        await this.files.update(file.id, {
+          restoreHeight: heightForRow(height),
+          layout: result.layout,
+        });
+        file.restoreHeight = heightForRow(height);
         file.layout = result.layout;
 
         return { result, height };
@@ -177,6 +299,126 @@ export class RestoreService {
     }
 
     throw new Error(`could not restore ${file.id}`);
+  }
+
+  /**
+   * How many frames a file of this size was written as, or null when the row
+   * does not know its own size yet.
+   *
+   * A denominator that does not depend on the container declaring one. Every
+   * group is `groupFrames` frames and carries `groupBytes` of payload, so the
+   * file's size is the frame count — and unlike `nb_frames`, a size does not go
+   * missing when yt-dlp remuxes the download.
+   *
+   * Deliberately approximate: gzip means the stored stream is shorter than the
+   * row's size, so this over-counts on a compressible file and the bar arrives
+   * at 100% a little early. A bar that is slightly conservative is worth more
+   * than no bar for three and a half minutes.
+   */
+  private async expectedFrames(file: StoredFile): Promise<number | null> {
+    if (!file.size) return null;
+    try {
+      const [layout, specs] = await Promise.all([this.codec.layout(file.layout), this.codec.specs()]);
+      return Math.ceil(file.size / layout.groupBytes) * specs.groupFrames;
+    } catch {
+      // A bar is a nicety; failing to draw one must never fail a restore.
+      return null;
+    }
+  }
+
+  /**
+   * The heights to try, best guess first.
+   *
+   * Three sources, in order of what they cost to be wrong about. A height
+   * already recorded on the row is free and was proven by a real decode, so it
+   * leads. Failing that, ten seconds of video is asked which rung answers,
+   * because being wrong about it costs twelve seconds here and eleven minutes
+   * further down. Failing that too, the static order stands — the probe is an
+   * optimisation and is never allowed to be the reason a restore refuses.
+   */
+  private async heightOrder(file: StoredFile): Promise<(number | null)[]> {
+    const known = heightFromRow(file.restoreHeight);
+    if (known !== undefined) {
+      return [known, ...HEIGHTS.filter((height) => height !== known)];
+    }
+
+    const probed = await this.probeOnce(file);
+    if (probed === undefined) return HEIGHTS;
+    return [probed, ...HEIGHTS.filter((height) => height !== probed)];
+  }
+
+  /**
+   * The probe, run at most once per file until something records an answer.
+   *
+   * Measured on a real read: the bundle listing opened a partial read, spent
+   * fifteen seconds discovering 1080p does not decode, gave up — and the
+   * restore that followed spent another fourteen discovering the same thing.
+   * The row cannot carry the answer between them, because nothing has proven it
+   * yet and a guess written there would be trusted absolutely on the next read.
+   * Holding it in memory for the life of the process is the middle ground: the
+   * second caller gets it free, and a restart forgets it.
+   */
+  private async probeOnce(file: StoredFile): Promise<number | null | undefined> {
+    const remembered = this.probed.get(file.id);
+    if (remembered !== undefined) return remembered.height;
+
+    const running = this.probing.get(file.id);
+    if (running) return running;
+
+    const started = this.probeHeight(file).finally(() => this.probing.delete(file.id));
+    this.probing.set(file.id, started);
+    const height = await started;
+    if (height !== undefined) this.probed.set(file.id, { height });
+    return height;
+  }
+
+  /**
+   * The first candidate height whose opening seconds actually decode.
+   *
+   * This is the same trick a partial read already uses — fetch a section, run
+   * `decode-range` over it — pointed at a different question. A rendition that
+   * cannot give up group 0 will not give up group 4000 either, so ten seconds
+   * answers what the whole file was being downloaded to answer.
+   *
+   * `undefined` means the probe reached no conclusion: every candidate failed,
+   * or the section could not be fetched at all. That is not a failure to
+   * report, it is a reason to fall back to trying them properly.
+   */
+  private async probeHeight(file: StoredFile): Promise<number | null | undefined> {
+    const specs = await this.codec.specs().catch(() => null);
+    if (!specs) return undefined;
+
+    for (const height of HEIGHTS) {
+      const dir = await mkdtemp(join(tmpdir(), 'yts-probe-'));
+      const videoPath = join(dir, 'probe.mp4');
+      const streamPath = join(dir, 'probe.bin');
+      const started = Date.now();
+      try {
+        await this.ytdlp.download(file.ytAccountId!, file.videoId!, videoPath, undefined, {
+          height,
+          section: { fromSeconds: 0, toSeconds: PROBE_SECONDS },
+        });
+        await this.codec.decodeRange(videoPath, 0, PROBE_GROUPS - 1, streamPath, file.layout, true);
+        this.log.log(
+          `${file.id} decodes at ${height ?? 'the best height'} — probed in ` +
+            `${Math.round((Date.now() - started) / 1000)}s instead of a whole download`,
+        );
+        return height;
+      } catch (error) {
+        // Expired cookies are not a rendition being unreadable, and swallowing
+        // them here would send the caller down the full-download path to
+        // rediscover the same thing eleven minutes later.
+        if (error instanceof CookiesExpiredError) throw error;
+        this.log.warn(
+          `${file.id} did not decode from ten seconds at ${height ?? 'the best height'} ` +
+            `(${(error as Error).message.split('\n')[0]})`,
+        );
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+
+    return undefined;
   }
 
   /** The whole round trip: download, decode, verify, cache. */
@@ -223,6 +465,88 @@ export class RestoreService {
     } finally {
       this.restoring.end(file.id);
     }
+  }
+
+  /**
+   * Proves YouTube is holding a readable copy, without downloading all of it.
+   *
+   * Verification used to mean a whole download and a whole decode — a second
+   * full round trip per stored file, and on this hardware about half the wall
+   * clock of storing anything at all. What that bought over this was a
+   * byte-exact hash of the payload; what this buys instead is the container
+   * header, whose own CRC has to pass and which carries the payload's length
+   * and sha256, plus every sampled group decoding inside its parity budget.
+   *
+   * The sampling is deliberately not random. Group 0 is where the header lives
+   * and the last group is where a truncated upload shows up first; the rest are
+   * spread evenly, because the damage this is looking for — a rendition YouTube
+   * re-encoded too hard, a transcode that stopped early — is not the kind that
+   * hides in one group and leaves its neighbours clean.
+   *
+   * The honest limit, stated because the caller decides what to do about it:
+   * damage confined between two samples passes here and is found on the first
+   * real read. Anything that deletes the only other copy on the strength of
+   * this needs to know that.
+   */
+  async sampleFromYoutube(
+    file: StoredFile,
+    onPhase?: (done: number, total: number) => void,
+  ): Promise<SampledCheck> {
+    const layout = await this.codec.layout(file.layout);
+    // The height first, and cheaply: sampling at a rendition that cannot be
+    // read would fail every group and report the file as broken.
+    const height = (await this.heightOrder(file))[0];
+
+    const head = await this.fetchGroups(file, 0, 0, height);
+    const scratch = await mkdtemp(join(tmpdir(), 'yts-verify-'));
+    let header;
+    try {
+      const path = join(scratch, 'head.bin');
+      await writeFile(path, head.subarray(0, Math.min(head.length, 8192)));
+      header = await this.codec.header(path);
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+
+    const totalGroups = Math.max(
+      1,
+      Math.ceil((header.payloadOffset + header.payloadLength) / layout.groupBytes),
+    );
+    const sampled = spreadGroups(totalGroups, SAMPLE_GROUPS);
+
+    onPhase?.(1, sampled.length);
+    for (const [index, group] of sampled.entries()) {
+      // Group 0 came back above; fetching it twice would be a download for
+      // nothing.
+      if (group === 0) continue;
+      // Throws when the group cannot be rebuilt from what came back — which is
+      // the whole check. `decodeRange` already refuses anything outside the
+      // parity budget.
+      await this.fetchGroups(file, group, group, height);
+      onPhase?.(index + 1, sampled.length);
+    }
+
+    // Eight groups spread across the video decoding at this height is better
+    // evidence than the ten-second probe that chose it, so it is worth writing
+    // down: without this the sampling path never records a height — it does not
+    // go through `fetchAndDecode`, which is what used to do the recording — and
+    // every later read pays the probe again.
+    await this.files.update(file.id, { restoreHeight: heightForRow(height) });
+    file.restoreHeight = heightForRow(height);
+
+    this.log.log(
+      `${file.id} sampled ${sampled.length} of ${totalGroups} groups at ` +
+        `${height ?? 'the best height'} — every one decoded`,
+    );
+
+    return {
+      name: header.name,
+      payloadLength: header.payloadLength,
+      gzipped: header.gzipped,
+      sha256: header.sha256,
+      groupsChecked: sampled.length,
+      totalGroups,
+    };
   }
 
   /**
@@ -325,6 +649,13 @@ export class RestoreService {
 
     try {
       const layout = await this.codec.layout(file.layout);
+      // Settle the height before reading anything real. Without this the first
+      // section fetch assumes the floor, and on a file that does not decode
+      // there it spends fifteen seconds finding out — then the restore it falls
+      // back to spends fourteen more finding out the same thing. `probeOnce`
+      // makes the two share one answer.
+      if (heightFromRow(file.restoreHeight) === undefined) await this.probeOnce(file);
+
       const reader = new PartialReader(
         file,
         layout.groupBytes,
@@ -344,15 +675,37 @@ export class RestoreService {
   }
 
   /** Pulls the seconds of video that hold `start..end` and decodes just them. */
-  private async fetchGroups(file: StoredFile, start: number, end: number): Promise<Buffer> {
+  private async fetchGroups(
+    file: StoredFile,
+    start: number,
+    end: number,
+    forceHeight?: number | null,
+  ): Promise<Buffer> {
     const specs = await this.codec.specs();
     const secondsPerGroup = specs.groupFrames / specs.fps;
     const dir = await mkdtemp(join(tmpdir(), 'yts-section-'));
     const videoPath = join(dir, 'section.mp4');
     const streamPath = join(dir, 'stream.bin');
+    // The caller's height, then the row, then whatever the probe settled this
+    // run, then the floor. Through the sentinel and not straight off the row:
+    // zero means "the best rendition" here and would reach yt-dlp as
+    // `bestvideo[height=0]`, which matches nothing. `??` cannot do the first
+    // step — it would fold "best" into the floor, the one height a file storing
+    // zero is known not to read at.
+    //
+    // Consulting the probe matters most for a bundle listing, which reaches
+    // this before any restore has run: it used to assume 1080p, spend fifteen
+    // seconds failing, and hand the whole archive to a full download.
+    const fromRow = heightFromRow(file.restoreHeight);
+    const known =
+      forceHeight !== undefined
+        ? forceHeight
+        : fromRow !== undefined
+          ? fromRow
+          : this.probed.get(file.id)?.height;
     try {
       await this.ytdlp.download(file.ytAccountId!, file.videoId!, videoPath, undefined, {
-        height: file.restoreHeight ?? MIN_DECODABLE_HEIGHT,
+        height: known === undefined ? MIN_DECODABLE_HEIGHT : known,
         section: {
           fromSeconds: Math.max(0, start * secondsPerGroup - SECTION_SLACK),
           toSeconds: (end + 1) * secondsPerGroup + SECTION_SLACK,

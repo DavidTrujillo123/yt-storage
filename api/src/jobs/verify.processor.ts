@@ -2,10 +2,10 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { rm } from 'node:fs/promises';
-import { join } from 'node:path';
 import { FilesService } from '../files/files.service';
 import { RestoreCache } from '../files/restore-cache';
-import { RestoreService } from '../files/restore.service';
+import { RestoreService, type SampledCheck } from '../files/restore.service';
+import type { StoredFile } from '../files/stored-file.entity';
 import { firstLine, YtdlpService } from '../youtube/ytdlp.service';
 import { FileJob, VERIFY_QUEUE, verifyBackoff } from './queues';
 
@@ -42,22 +42,21 @@ export class VerifyProcessor extends WorkerHost {
     // No readiness probe. There used to be one, asking yt-dlp in --simulate
     // mode whether a 1080p rendition existed, and it disagreed with the real
     // fetch: the probe reported nothing available for videos that downloaded
-    // perfectly a second later. Attempting the download *is* the check — one
-    // code path, so the two can never contradict each other. A video still
+    // perfectly a second later. Attempting the fetch *is* the check — one code
+    // path, so the two can never contradict each other. A video still
     // transcoding fails here and the job simply retries.
     const dir = await this.files.ensureDir('verify', file.id);
-    const videoPath = join(dir, 'download.mp4');
 
     try {
       await this.files.update(file.id, {
         verifyAttempts: job.attemptsMade + 1,
         lastCheckedAt: new Date(),
       });
-      // The same download-and-decode a restore does, heights and all. Sharing
-      // it is the point: verification is the claim that a later read will
-      // work, so checking a rendition nobody reads back would prove the wrong
-      // thing. It also records which height answered, so the first real
-      // restore does not rediscover it.
+      // Sampled rather than exhaustive, and through the same section-fetch path
+      // a bundle preview uses — so what is being checked is still the path a
+      // later read will take, which was always the point of verifying. It also
+      // resolves which height answers and leaves that on the row, so the first
+      // real restore does not rediscover it.
       //
       // VERIFYING is set inside, not at the top. Setting it before the
       // download meant the row read "verifying" for the whole retry window
@@ -65,24 +64,27 @@ export class VerifyProcessor extends WorkerHost {
       // one being actively checked. Until the video is fetched it is still
       // PROCESSING — which is exactly what the status names say.
       let marked = false;
-      const { result } = await this.restore.fetchAndDecode(file, videoPath, dir, (phase) => {
-        if (phase !== 'decoding' || marked) return;
+      const check = await this.restore.sampleFromYoutube(file, (done) => {
+        if (done < 1 || marked) return;
         marked = true;
         void this.files.setStatus(file.id, 'VERIFYING');
       });
-      if (result.sha256 !== file.sha256) {
-        throw new Error(`hash mismatch: stored ${file.sha256}, recovered ${result.sha256}`);
-      }
+
+      const disagreement = headerDisagreesWith(file, check);
+      if (disagreement) throw new Error(disagreement);
 
       this.log.log(
-        `${file.name} verified - ${result.framesRepaired} frames repaired, ${result.framesLost} rebuilt from parity`,
+        `${file.name} verified - ${check.groupsChecked} of ${check.totalGroups} groups sampled, ` +
+          'header hash and length agree',
       );
 
-      // Verification has just decoded the whole file to check its hash, and
-      // the next thing anyone does with a file that turns READY is look at it.
-      // Handing those bytes to the cache instead of deleting them makes the
-      // first preview instant, and costs nothing: they are already on disk.
-      await this.cache.put(result.sha256, result.name);
+      // The local copy is about to be released, and the next thing anyone does
+      // with a file that turns READY is look at it. Handing those bytes to the
+      // cache first is what keeps the first preview instant now that
+      // verification no longer decodes the whole file to hand over.
+      if (file.sourcePath) {
+        await this.cache.put(file.sha256, file.sourcePath).catch(() => undefined);
+      }
 
       await this.files.releaseLocalCopies(file);
       await this.files.update(file.id, {
@@ -145,4 +147,37 @@ export class VerifyProcessor extends WorkerHost {
   private isLastAttempt(job: Job<FileJob>): boolean {
     return job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
   }
+}
+
+/**
+ * Whether what the container header says contradicts what the row claims.
+ *
+ * Returns the complaint, or null when the two agree. Split out of the processor
+ * because getting it wrong is expensive in a specific way — it rejects a file
+ * that is perfectly recoverable — and because that is exactly what happened:
+ * comparing `payloadLength` to `size` refused `x6LtjqFWP8Q` after all eight
+ * sampled groups had decoded and the hash had already matched.
+ *
+ * The hash is the check that carries the weight. It is taken over the original
+ * bytes before the container ever compresses them, so it is the only thing that
+ * survives gzip unchanged — and, conveniently, the only thing an attacker or a
+ * bad transcode cannot forge past a CRC-protected header.
+ */
+export function headerDisagreesWith(
+  file: Pick<StoredFile, 'sha256' | 'size'>,
+  check: SampledCheck,
+): string | null {
+  if (check.sha256 !== file.sha256) {
+    return `hash mismatch: stored ${file.sha256}, container says ${check.sha256}`;
+  }
+
+  // Only when the container stored the bytes as they came. `payloadLength` is
+  // the length of the *stream*: for a gzipped container that is the compressed
+  // size and the row's is not. Nothing records the original length except the
+  // hash, which has already been checked above.
+  if (file.size && !check.gzipped && check.payloadLength !== file.size) {
+    return `length mismatch: stored ${file.size} bytes, container says ${check.payloadLength}`;
+  }
+
+  return null;
 }

@@ -31,6 +31,12 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@yt-storage.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Abcd1234}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5368709120}
+      # A restore's wall clock is essentially all download — measured at 5.6
+      # MB/s across 3.97 GB, with bursts to 13 and stalls near zero, which is
+      # per-connection throttling rather than a full link. This is the ceiling
+      # the app aims at; it halves itself whenever YouTube answers with a bot
+      # check or a 429, and climbs back after a clean download.
+      YTDLP_CONCURRENT_FRAGMENTS: ${YTDLP_CONCURRENT_FRAGMENTS:-32}
       # Restored bytes, kept so a second read of the same file is a disk read.
       # An entry is a whole stored file, so the budget has to hold several of
       # them or every preview pays for another download and decode; 2 GiB was

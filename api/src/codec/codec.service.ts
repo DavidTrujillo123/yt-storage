@@ -160,7 +160,7 @@ export class CodecService {
   async decode(
     videoPath: string,
     outputDir: string,
-    onProgress?: (percent: number) => void,
+    onProgress?: (percent: number | null, framesRead: number) => void,
     layout?: string | null,
   ): Promise<DecodeResult> {
     this.log.log(`decoding ${videoPath}`);
@@ -168,12 +168,28 @@ export class CodecService {
     // the container does not carry one, and then there is no percentage to
     // report — the caller shows the phase without a bar rather than a made-up
     // number.
+    //
+    // `null` is reported rather than nothing at all, and that distinction is
+    // the whole fix. This used to stay silent whenever the total was missing,
+    // and the caller only learns a decode has started by being told — so a
+    // download that had just finished sat on screen at 100% for the entire
+    // decode, which is what "it gets stuck at 100%" was. A remuxed yt-dlp
+    // download is exactly the case where `nb_frames` is N/A, so this was not
+    // the rare path, it was the normal one.
     return this.run<DecodeResult>(
       ['decode', videoPath, outputDir, ...(layout ? ['--layout', layout] : [])],
       (event) => {
-        if (event.type === 'progress' && typeof event.frames === 'number' && typeof event.total === 'number') {
-          onProgress?.(Math.round((event.frames / event.total) * 100));
-        }
+        if (event.type !== 'progress' || typeof event.frames !== 'number') return;
+        // The frame count goes out alongside the percentage so a caller that
+        // knows the denominator some other way — a restore knows the file's
+        // size, and the grid says how many frames that is — can work one out
+        // when the container refuses to.
+        onProgress?.(
+          typeof event.total === 'number' && event.total > 0
+            ? Math.round((event.frames / event.total) * 100)
+            : null,
+          event.frames,
+        );
       },
     );
   }

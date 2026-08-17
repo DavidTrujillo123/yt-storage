@@ -466,6 +466,33 @@ made.
   If a 1080p rendition does not decode, the restore falls back to the best
   available at or above the floor and remembers which height answered, so the
   discovery is paid for once per file.
+- **The height is settled on ten seconds of video, not on the whole file.**
+  Measured on `poOMbFOWpgc`, a 689 MB bundle: the 1080p rendition downloaded
+  3.97 GB over 11 min 52 s and then failed to decode, and only then did the
+  best-height download start — 45% of that restore's network time bought
+  nothing. A restore now fetches ten seconds at each candidate height and runs
+  `decode-range` over it first, which answers the same question in about twelve
+  seconds. The full fallback loop stays underneath: the probe reorders the
+  candidates, it never refuses a file on their behalf.
+- **"Best available" is stored as `0`, not as `null`.** They used to be the same
+  value, and `null` also meant "nothing recorded", so a file that only ever
+  decoded at 2160p re-tried 1080p on every read for good. If you are reading
+  `restoreHeight` out of the database by hand, `0` means best and `NULL` means
+  not yet known.
+- **A restore's wall clock is almost all download.** Decoding runs at about
+  10 MiB/s of payload — roughly 70 seconds for 689 MB, under a tenth of the
+  total. `YTDLP_CONCURRENT_FRAGMENTS` is therefore the knob that matters; it
+  defaults to 32 and the app halves its own ceiling whenever YouTube answers
+  with a 429 or a bot check, climbing back four at a time after a clean
+  download.
+- **Verification samples, it does not read everything back.** It fetches the
+  container header out of group 0 and eight groups spread across the video,
+  requires every one to decode inside its parity budget, and checks the header's
+  claimed hash and payload length against the row — about ninety seconds against
+  the fifteen minutes or more a full read-back cost. The trade is real and worth
+  stating: damage confined between two samples passes verification and is found
+  on the first full read. The local copy is moved into the restore cache rather
+  than deleted outright, so those bytes survive until the cache evicts them.
 - **Run it on a residential connection.** YouTube treats datacenter IP ranges
   very differently; from a VPS you will hit "Sign in to confirm you're not a
   bot" constantly, which means failed *retrievals*. A machine at home reachable

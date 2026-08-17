@@ -105,6 +105,14 @@ export class StoredFile {
    * the best one if that does not decode. Remembering the answer is what stops
    * a file that genuinely needs 2160p from paying for the failed attempt every
    * single time.
+   *
+   * `BEST_HEIGHT` — zero — is how "the best rendition available" is written
+   * down, and it is not a decoration. The height that means best is `null` at
+   * every other layer, and storing that here left it indistinguishable from
+   * "nothing recorded yet": the falsy check that picks the candidate order read
+   * both as unknown, so a file that only ever decodes at 2160p re-tried 1080p
+   * on every single read. Measured on `poOMbFOWpgc`, that was eleven minutes
+   * and 3.97 GB thrown away per restore, for good.
    */
   @Column({ type: 'integer', nullable: true })
   restoreHeight!: number | null;

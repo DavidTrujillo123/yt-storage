@@ -15,7 +15,15 @@ const HEX_LIMIT = 4 * 1024;
  * needs more than the head of it to show what it is.
  */
 async function readHead(url: string, limit: number): Promise<Uint8Array> {
-  const response = await fetch(url);
+  // The range is what makes the hanging up cheap on the server too: without it
+  // the API starts streaming the whole file and only finds out we left when it
+  // tries to write into a closed socket. A 206 is the answer; a server that
+  // ignores the range answers 200 with all of it, which the reader below still
+  // cuts short.
+  const response = await fetch(url, { headers: { Range: `bytes=0-${limit - 1}` } });
+  // A file with no bytes has no range to satisfy, and an empty preview is the
+  // honest answer to it rather than an error about the request.
+  if (response.status === 416) return new Uint8Array(0);
   if (!response.ok) throw new Error(`could not read it back (${response.status})`);
   if (!response.body) return new Uint8Array(await response.arrayBuffer()).subarray(0, limit);
 

@@ -10,13 +10,13 @@ import {
   Query,
   Req,
   Res,
-  StreamableFile,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { createReadStream } from 'node:fs';
+import { statSync } from 'node:fs';
+import { dispositionOf, serveRange } from './serve';
 import { isTarName } from './tar';
 import { MAX_BUNDLE_ENTRIES } from './bundle';
 import type { Request, Response } from 'express';
@@ -151,29 +151,44 @@ export class FilesController {
     // living on YouTube saves a download and a decode, not just a transfer.
     const etag = `"${file.sha256}"`;
 
-    // Read at send time rather than reused from above: an imported row has its
-    // name and hash replaced by the decode that just ran, and the headers must
-    // describe the bytes going out, not the description they were claimed from.
-    const send = (path: string, onClose?: () => void) => {
-      res.set({
-        'Content-Type': inline ? contentTypeOf(file.name) : 'application/octet-stream',
-        'Content-Disposition':
-          `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(file.name)}"`,
-        ETag: `"${file.sha256}"`,
+    // Only when the client is asking about the whole thing. A resumed download
+    // carries both If-None-Match and Range, and answering that with 304 leaves
+    // the browser with the half it already had and no way to finish it.
+    if (req.headers['if-none-match'] === etag && !req.headers.range) {
+      res.status(304).set({
+        ETag: etag,
+        'Accept-Ranges': 'bytes',
         'Cache-Control': 'private, max-age=3600, must-revalidate',
       });
-      const stream = createReadStream(path);
-      if (onClose) stream.on('close', onClose);
-      return new StreamableFile(stream);
-    };
-
-    if (req.headers['if-none-match'] === etag) {
-      res.status(304).set({ ETag: etag, 'Cache-Control': 'private, max-age=3600, must-revalidate' });
       return;
     }
 
     const bytes = await this.bytesOf(file, source === 'youtube');
-    return send(bytes.path, bytes.cleanup);
+    try {
+      // The length comes off the file on disk rather than from the row: an
+      // imported row's size is a claim from a description until a decode
+      // replaces it, and a Content-Length that disagrees with the body by one
+      // byte fails the whole download.
+      const stream = serveRange(res, {
+        path: bytes.path,
+        window: { start: 0, length: statSync(bytes.path).size },
+        // Read here rather than reused from above: an imported row has its name
+        // and hash replaced by the decode that just ran, and the headers must
+        // describe the bytes going out, not the description they were claimed from.
+        contentType: inline ? contentTypeOf(file.name) : 'application/octet-stream',
+        disposition: dispositionOf(file.name, Boolean(inline)),
+        etag: `"${file.sha256}"`,
+        range: req.headers.range,
+      });
+
+      // A 416 has no body, so nothing will ever close a stream for it.
+      if (!stream) bytes.cleanup?.();
+      else if (bytes.cleanup) stream.getStream().on('close', bytes.cleanup);
+      return stream ?? undefined;
+    } catch (error) {
+      bytes.cleanup?.();
+      throw error;
+    }
   }
 
   /**
@@ -214,6 +229,7 @@ export class FilesController {
     @CurrentUser() user: User,
     @Param('id') id: string,
     @Param('index') index: string,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
     @Query('inline') inline?: string,
   ) {
@@ -227,26 +243,24 @@ export class FilesController {
     const bytes = await this.restore.entryBytes(file, item);
     try {
       const leaf = item.name.split('/').pop() ?? item.name;
-      res.set({
-        'Content-Type': inline ? contentTypeOf(leaf) : 'application/octet-stream',
-        'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(leaf)}"`,
-        'Content-Length': String(item.size),
-        // The archive's hash plus the entry pins these exact bytes.
-        ETag: `"${file.sha256}-${index}"`,
-        'Cache-Control': 'private, max-age=3600, must-revalidate',
-      });
-
       // `entryBytes` returns either the whole archive, where the entry is a
       // range of it, or just the entry, where it is the whole file. `isSlice`
       // is which — reading a range out of a file that is only the entry would
       // seek past the end of it.
       const start = bytes.isSlice ? 0 : item.offset;
-      const stream =
-        item.size === 0
-          ? createReadStream(bytes.path, { start: 0, end: -1 })
-          : createReadStream(bytes.path, { start, end: start + item.size - 1 });
-      if (bytes.cleanup) stream.on('close', bytes.cleanup);
-      return new StreamableFile(stream);
+      const stream = serveRange(res, {
+        path: bytes.path,
+        window: { start, length: item.size },
+        contentType: inline ? contentTypeOf(leaf) : 'application/octet-stream',
+        disposition: dispositionOf(leaf, Boolean(inline)),
+        // The archive's hash plus the entry pins these exact bytes.
+        etag: `"${file.sha256}-${index}"`,
+        range: req.headers.range,
+      });
+
+      if (!stream) bytes.cleanup?.();
+      else if (bytes.cleanup) stream.getStream().on('close', bytes.cleanup);
+      return stream ?? undefined;
     } catch (error) {
       bytes.cleanup?.();
       throw error;
