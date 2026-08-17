@@ -280,8 +280,13 @@ export async function decodeVideo(
   follow?: string,
 ): Promise<DecodeStats> {
   // Asked once, before the read, so progress has a denominator. ffprobe on a
-  // local file is milliseconds against a decode measured in minutes.
-  const total = onProgress ? (await probe(videoPath)).frames : null;
+  // local file is milliseconds against a decode measured in minutes — but
+  // only once the file is done growing. Probing while `follow` is set means
+  // the file can still be a handful of bytes with no moov atom yet, and
+  // ffprobe does not report that as "unknown", it exits non-zero. A missing
+  // total is a bar without a percentage; a crashed probe took the whole
+  // decode down with it.
+  const total = onProgress && !follow ? (await probe(videoPath)).frames : null;
 
   // Which grid, before anything else: it decides how much of the video has to
   // be kept on the way in and how many bytes a frame is. The caller can say,
