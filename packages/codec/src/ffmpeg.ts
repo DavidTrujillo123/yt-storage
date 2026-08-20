@@ -43,7 +43,7 @@ export function openVideoSink(
     '-y',
     '-f', 'rawvideo',
     '-pix_fmt', 'gray',
-    '-s', `${WIDTH}x${HEIGHT}`,
+    '-s', `${layout.canvasW}x${layout.canvasH}`,
     '-r', String(FPS),
     '-i', 'pipe:0',
     // A silent audio track. Not decoration: YouTube treats a video with no
@@ -65,7 +65,13 @@ export function openVideoSink(
     '-map', '1:a',
     '-c:a', 'aac',
     '-b:a', '8k',
-    '-vf', `scale=${UPSCALE_W}:${UPSCALE_H}:flags=neighbor,format=yuv420p`,
+    // Nearest neighbour so a block stays a block: any smoothing here is
+    // information the decoder has to undo. A layout already drawn at the upload
+    // size skips the scale entirely rather than scaling by one.
+    '-vf',
+    layout.canvasW === layout.uploadW && layout.canvasH === layout.uploadH
+      ? 'format=yuv420p'
+      : `scale=${layout.uploadW}:${layout.uploadH}:flags=neighbor,format=yuv420p`,
     '-c:v', 'libx264',
     // Per layout: a finer grid costs x264 more bits at the same quality, and
     // has the margin at 2160p to give some of them back.
@@ -292,6 +298,12 @@ export async function openRawFrames(
     // arrive on stdin instead, from a reader that waits rather than ends. The
     // geometry above still came from probing the file, which works from its
     // first fragment on.
+    // Decoding VP9 at 2160p is the expensive half of a restore now that the
+    // download is not, and ffmpeg's default is one thread for an input it was
+    // given no opinion about. `-row-mt` belongs to the *encoder* and ffmpeg
+    // rejects the input outright when it is offered here, which is how the
+    // first attempt at this was caught.
+    '-threads', '0',
     '-i', follow ? 'pipe:0' : path,
     ...(shrink ? ['-vf', `scale=${wantW}:${wantH}:flags=area`] : []),
     ...(limit ? ['-frames:v', String(limit)] : []),

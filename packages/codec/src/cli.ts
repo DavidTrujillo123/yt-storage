@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { encodeFile } from './encode.ts';
 import { decodeRange, decodeVideo } from './decode.ts';
+import { decodeJobs, decodeVideoParallel } from './parallel.ts';
 import { simulateYouTube } from './ffmpeg.ts';
 import { readHeader } from './container.ts';
 import { FPS, GROUP_FRAMES, RS_K, RS_M } from './geometry.ts';
@@ -122,14 +123,45 @@ async function main(): Promise<void> {
     // A sentinel rather than a signal because the writer is another process
     // entirely — the app downloads, this decodes — and a file showing up is the
     // smallest thing that crosses that line.
-    const { value: follow, rest } = takeOption(afterLayout, '--follow');
+    const { value: follow, rest: afterFollow } = takeOption(afterLayout, '--follow');
+    // Ranges decoded at once. A whole file only: following a download has no
+    // end to divide by, and the streaming decode already overlaps with it.
+    const { value: jobsArg, rest } = takeOption(afterFollow, '--jobs');
     const hint: Layout | undefined = layoutArg ? layoutById(layoutArg) : undefined;
     const [video, outDir = '.'] = rest;
     if (!video) {
-      throw new Error('usage: decode <video> [output-dir] [--layout <id>] [--follow <sentinel>]');
+      throw new Error(
+        'usage: decode <video> [output-dir] [--layout <id>] [--follow <sentinel>] [--jobs <n>]',
+      );
     }
 
     await mkdir(outDir, { recursive: true });
+
+    const jobs = jobsArg ? Number(jobsArg) : follow ? 1 : decodeJobs();
+    if (!follow && jobs > 1) {
+      const stats = await decodeVideoParallel(video, outDir, jobs, (done, total) => {
+        // Reported as frames, because that is what every reader of this stream
+        // already understands — a group is a fixed number of them, so the two
+        // are the same number in different units and a bar built for one works
+        // for the other.
+        progress(
+          json,
+          { type: 'progress', frames: done * GROUP_FRAMES, total: total * GROUP_FRAMES },
+          `group ${done}/${total}`,
+        );
+      }, hint);
+      if (json) {
+        console.log(JSON.stringify(stats));
+        return;
+      }
+      process.stderr.write('\n');
+      console.log(`layout       ${stats.layout}`);
+      console.log(`jobs         ${jobs}`);
+      console.log(`written      ${join(outDir, stats.name)}  ${mib(stats.bytes)}`);
+      console.log(`sha256       ${stats.sha256}`);
+      return;
+    }
+
     const stats = await decodeVideo(video, outDir, (n, total) => {
       if (n % 30 !== 0) return;
       progress(
@@ -137,7 +169,7 @@ async function main(): Promise<void> {
         { type: 'progress', frames: n, total },
         total ? `reading frame ${n}/${total}` : `reading frame ${n}`,
       );
-    }, hint, follow);
+    }, hint, follow ?? undefined);
 
     if (json) {
       console.log(JSON.stringify(stats));

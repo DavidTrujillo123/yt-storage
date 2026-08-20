@@ -39,7 +39,15 @@ export interface SampledShard {
 export function workerCount(): number {
   const asked = Number(process.env.CODEC_WORKERS);
   if (Number.isFinite(asked) && asked >= 0) return Math.floor(asked);
-  return Math.max(1, Math.min(4, availableParallelism() - 2));
+  // Two cores left for ffmpeg and the main thread, and no ceiling beyond that.
+  //
+  // The cap used to be four, from a time when the download was the whole wall
+  // clock and CPU was free to leave idle. It is not any more: with an external
+  // downloader a ten-gigabyte video lands in under two minutes and the decode
+  // is the rest of the restore — measured at 11m23s for 2 GiB while the
+  // container sat at 241% of twelve available cores. Four workers was leaving
+  // three quarters of the machine unused on the phase that now dominates.
+  return Math.max(1, availableParallelism() - 2);
 }
 
 /** Where the worker file lives, whether this is running from source or from dist. */

@@ -326,6 +326,30 @@ export class RestoreService {
           // finish is a hung restore, which is worse than a reported error.
           .finally(() => writeFile(done, '').catch(() => undefined));
 
+        // Sixteen ranges at once means the file on disk has holes in it until
+        // the last one lands, and the decoder reads a prefix. So with an
+        // external downloader the two phases go back to being sequential —
+        // which is a trade, not a regression: the streaming decode saved the
+        // decode's own wall clock, and the connections save several times that.
+        if (this.ytdlp.external) {
+          await downloading;
+          const result = await this.codec.decode(
+            videoPath,
+            outDir,
+            (percent, frames) =>
+              onPhase?.(
+                'decoding',
+                percent ?? (expected ? Math.min(100, Math.round((frames / expected) * 100)) : null),
+              ),
+            file.layout,
+          );
+          await this.files.update(file.id, {
+            restoreHeight: heightForRow(height),
+            layout: result.layout,
+          });
+          return { result, height };
+        }
+
         // Wait for the first fragments before opening the decoder: it probes
         // the file for geometry, and a file that does not exist yet has none.
         await this.firstBytes(videoPath, downloading);
@@ -511,7 +535,20 @@ export class RestoreService {
       const renditions = await this.ytdlp.renditions(file.ytAccountId!, file.videoId!);
       const usable = renditions
         .filter((rendition) => rendition.height >= MIN_DECODABLE_HEIGHT && rendition.bytes !== null)
-        .sort((a, b) => a.bytes! - b.bytes!);
+        // Bytes while the download is the cost, pixels once it is not.
+        //
+        // The measurement that put bytes first was taken when a restore moved
+        // at about a megabyte a second, and the 2160p rendition is regularly
+        // the smallest of the three. With an external downloader that number
+        // is 65 MB/s — a ten-gigabyte video in under two minutes — and the
+        // wall clock moves entirely to the decode, where 4K costs roughly four
+        // times what 1080p does for the same payload. Measured on a 2 GiB
+        // restore: 1m51s of download against 11m23s of decode.
+        //
+        // So the order follows whichever is actually scarce, and the height
+        // probe still protects the choice: a rendition that cannot be read
+        // fails in twelve seconds and the next one is tried.
+        .sort((a, b) => (this.ytdlp.external ? a.height - b.height : a.bytes! - b.bytes!));
       if (usable.length === 0) return HEIGHTS;
 
       // `null` stays on the end as the catch-all: it means "best at or above

@@ -163,16 +163,20 @@ describe('erasure coding', () => {
 // Every layout is a physical layer of its own, so each one is held to the same
 // bar: what one grid can round-trip, damage and repair, the other must too.
 for (const layout of LAYOUTS) describe(`frame (${layout.id})`, () => {
+  // Per layout, because the canvas is per layout now: `ultra` draws straight
+  // at 3840x2160 where the other two draw at 1920x1080 and are upscaled on the
+  // way out. A test pinned to one canvas silently checked the wrong grid.
+  const { canvasW: W, canvasH: H } = layout;
   const payload = randomBytes(layout.shardBytes);
   const header = buildHeader({ groupIndex: 7, shardIndex: 25, flags: 0 }, payload);
   const image = renderFrame(header, payload, layout);
 
   it('renders a canvas of exactly one frame', () => {
-    assert.equal(image.length, WIDTH * HEIGHT);
+    assert.equal(image.length, W * H);
   });
 
   it('round-trips bits through pixels', () => {
-    const decoded = decodeFrame(sampleFrame(image, WIDTH, HEIGHT, layout), layout);
+    const decoded = decodeFrame(sampleFrame(image, W, H, layout), layout);
     assert.ok(decoded);
     assert.deepEqual(decoded.payload, payload);
     assert.equal(decoded.header.groupIndex, 7);
@@ -184,14 +188,14 @@ for (const layout of LAYOUTS) describe(`frame (${layout.id})`, () => {
     // What YouTube hands back is never the canvas that went in. The decoder
     // samples block centres, so it should not care about the scale factor.
     const scale = 2;
-    const big = Buffer.alloc(WIDTH * scale * HEIGHT * scale);
-    for (let y = 0; y < HEIGHT * scale; y++) {
-      for (let x = 0; x < WIDTH * scale; x++) {
-        big[y * WIDTH * scale + x] = image[Math.floor(y / scale) * WIDTH + Math.floor(x / scale)];
+    const big = Buffer.alloc(W * scale * H * scale);
+    for (let y = 0; y < H * scale; y++) {
+      for (let x = 0; x < W * scale; x++) {
+        big[y * W * scale + x] = image[Math.floor(y / scale) * W + Math.floor(x / scale)];
       }
     }
 
-    const decoded = decodeFrame(sampleFrame(big, WIDTH * scale, HEIGHT * scale, layout), layout);
+    const decoded = decodeFrame(sampleFrame(big, W * scale, H * scale, layout), layout);
     assert.deepEqual(decoded?.payload, payload);
   });
 
@@ -199,11 +203,11 @@ for (const layout of LAYOUTS) describe(`frame (${layout.id})`, () => {
     // Black at 40 and white at 200 instead of 0 and 255: the checkerboard
     // border is what lets the decoder find the new midpoint.
     const washed = Buffer.from(image.map((v) => (v === 255 ? 200 : 40)));
-    assert.deepEqual(decodeFrame(sampleFrame(washed, WIDTH, HEIGHT, layout), layout)?.payload, payload);
+    assert.deepEqual(decodeFrame(sampleFrame(washed, W, H, layout), layout)?.payload, payload);
   });
 
   it('repairs the least confident bit when the CRC fails', () => {
-    const sampled = sampleFrame(image, WIDTH, HEIGHT, layout);
+    const sampled = sampleFrame(image, W, H, layout);
     const target = 900;
     sampled.bits[target] ^= 1;
     sampled.confidence[target] = 0; // as a marginal block would report
@@ -214,7 +218,7 @@ for (const layout of LAYOUTS) describe(`frame (${layout.id})`, () => {
   });
 
   it('repairs two flipped bits', () => {
-    const sampled = sampleFrame(image, WIDTH, HEIGHT, layout);
+    const sampled = sampleFrame(image, W, H, layout);
     for (const i of [64, 4096]) {
       sampled.bits[i] ^= 1;
       sampled.confidence[i] = 0;
@@ -226,21 +230,21 @@ for (const layout of LAYOUTS) describe(`frame (${layout.id})`, () => {
     // Damage far beyond the soft-decision budget: the CRC must turn this into
     // an erasure, which is the case Reed-Solomon handles. Silently returning
     // corrupt bytes here would defeat every layer above.
-    const sampled = sampleFrame(image, WIDTH, HEIGHT, layout);
+    const sampled = sampleFrame(image, W, H, layout);
     for (let i = 0; i < 400; i++) sampled.bits[i * 37] ^= 1;
     assert.equal(decodeFrame(sampled, layout), null);
   });
 
   it('does not attempt repair when it is turned off', () => {
-    const sampled = sampleFrame(image, WIDTH, HEIGHT, layout);
+    const sampled = sampleFrame(image, W, H, layout);
     sampled.bits[10] ^= 1;
     sampled.confidence[10] = 0;
     assert.equal(decodeFrame(sampled, layout, false), null);
   });
 
   it('rejects a frame of noise rather than parsing it', () => {
-    const noise = randomBytes(WIDTH * HEIGHT);
-    assert.equal(decodeFrame(sampleFrame(noise, WIDTH, HEIGHT, layout), layout), null);
+    const noise = randomBytes(W * H);
+    assert.equal(decodeFrame(sampleFrame(noise, W, H, layout), layout), null);
   });
 });
 
@@ -252,9 +256,20 @@ describe('layouts', () => {
       assert.equal(layout.shardBytes % 8, 0);
     });
 
-    it(`${layout.id} divides the canvas into whole blocks`, () => {
-      assert.equal(WIDTH % layout.block, 0);
-      assert.equal(HEIGHT % layout.block, 0);
+    it(`${layout.id} divides its own canvas into whole blocks`, () => {
+      assert.equal(layout.canvasW % layout.block, 0);
+      assert.equal(layout.canvasH % layout.block, 0);
+      assert.equal(layout.gridW, layout.canvasW / layout.block);
+      assert.equal(layout.gridH, layout.canvasH / layout.block);
+    });
+
+    it(`${layout.id} uploads at a size the canvas divides into`, () => {
+      // Nearest-neighbour upscaling only preserves blocks at a whole ratio; a
+      // fractional one lands block edges between pixels, which is the failure
+      // the sampler cannot see and cannot recover from.
+      assert.equal(layout.uploadW % layout.canvasW, 0);
+      assert.equal(layout.uploadH % layout.canvasH, 0);
+      assert.equal(layout.uploadW / layout.canvasW, layout.uploadH / layout.canvasH);
     });
 
     it(`${layout.id} asks for a height that is whole blocks`, () => {

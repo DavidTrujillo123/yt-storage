@@ -38,6 +38,12 @@ services:
       # YouTube abandons the transcode, so guessing high is expensive. A
       # channel verified by phone accepts twelve hours: 43200.
       YOUTUBE_MAX_VIDEO_SECONDS: ${YOUTUBE_MAX_VIDEO_SECONDS:-900}
+      # `aria2c` hands downloads to aria2, which asks for sixteen ranges at
+      # once — the only thing measured to beat YouTube's per-connection
+      # throttle. It costs the streaming decode: aria2 fills the file out of
+      # order, so decoding waits for the download to finish. Empty or `none`
+      # keeps yt-dlp's own downloader and the overlap.
+      YTDLP_EXTERNAL_DOWNLOADER: ${YTDLP_EXTERNAL_DOWNLOADER:-}
       # A restore's wall clock is essentially all download — measured at 5.6
       # MB/s across 3.97 GB, with bursts to 13 and stalls near zero, which is
       # per-connection throttling rather than a full link. This is the ceiling

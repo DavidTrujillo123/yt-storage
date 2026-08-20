@@ -76,10 +76,10 @@ function scratchFor(layout: Layout): Scratch {
   return scratch;
 }
 
-/** Renders one frame's bits into a WIDTH x HEIGHT grayscale buffer. */
+/** Renders one frame's bits into the layout's canvas as a grayscale buffer. */
 export function renderFrame(header: Uint8Array, payload: Uint8Array, layout: Layout): Buffer {
   const { bits } = scratchFor(layout);
-  const { block, gridW, gridH, innerW } = layout;
+  const { block, gridW, gridH, innerW, canvasW, canvasH } = layout;
 
   let bit = 0;
   const write = (src: Uint8Array) => {
@@ -102,8 +102,8 @@ export function renderFrame(header: Uint8Array, payload: Uint8Array, layout: Lay
   // the previous frame's bits, which would render as data nobody wrote.
   bits.fill(0, bit);
 
-  const img = Buffer.alloc(WIDTH * HEIGHT);
-  const row = Buffer.alloc(WIDTH);
+  const img = Buffer.alloc(canvasW * canvasH);
+  const row = Buffer.alloc(canvasW);
 
   for (let r = 0; r < gridH; r++) {
     const onEdgeRow = r === 0 || r === gridH - 1;
@@ -116,7 +116,7 @@ export function renderFrame(header: Uint8Array, payload: Uint8Array, layout: Lay
       const x = c * block;
       for (let k = 0; k < block; k++) row[x + k] = value;
     }
-    for (let b = 0; b < block; b++) row.copy(img, (r * block + b) * WIDTH);
+    for (let b = 0; b < block; b++) row.copy(img, (r * block + b) * canvasW);
   }
   return img;
 }

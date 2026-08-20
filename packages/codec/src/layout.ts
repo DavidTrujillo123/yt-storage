@@ -19,14 +19,28 @@
  * which do not line up with the 8x8 grid x264 works in, and the master comes
  * out 33x the size of the file instead of 4.5x.
  */
-import { HEADER_BITS, HEIGHT, RS_K, WIDTH } from './geometry.ts';
+import { HEADER_BITS, HEIGHT, RS_K, UPSCALE_H, UPSCALE_W, WIDTH } from './geometry.ts';
 
-export type LayoutId = 'dense' | 'wide';
+export type LayoutId = 'dense' | 'wide' | 'ultra';
 
 export interface Layout {
   /** Stored per file, so a video written by an older version still reads. */
   id: LayoutId;
   block: number;
+  /**
+   * The canvas the encoder draws on, which is not always what is uploaded.
+   *
+   * `dense` and `wide` draw at 1920x1080 and are then doubled with nearest
+   * neighbour, so every block arrives at YouTube as four pixels of margin
+   * against the re-encode. `ultra` draws at 3840x2160 and spends that margin
+   * on data instead: four times the bytes a second, and therefore a quarter of
+   * the video to move and a quarter of the frames to decode.
+   */
+  canvasW: number;
+  canvasH: number;
+  /** What is handed to x264, after the nearest-neighbour upscale if there is one. */
+  uploadW: number;
+  uploadH: number;
   gridW: number;
   gridH: number;
   innerW: number;
@@ -58,9 +72,15 @@ export interface Layout {
   pixelsPerBlock: number;
 }
 
-function layoutFor(id: LayoutId, block: number, crf: string, minHeight: number): Layout {
-  const gridW = WIDTH / block;
-  const gridH = HEIGHT / block;
+function layoutFor(
+  id: LayoutId,
+  block: number,
+  crf: string,
+  minHeight: number,
+  canvas: { w: number; h: number } = { w: WIDTH, h: HEIGHT },
+): Layout {
+  const gridW = canvas.w / block;
+  const gridH = canvas.h / block;
   const innerW = gridW - 2;
   const innerH = gridH - 2;
   const innerBits = innerW * innerH;
@@ -71,6 +91,12 @@ function layoutFor(id: LayoutId, block: number, crf: string, minHeight: number):
   return {
     id,
     block,
+    canvasW: canvas.w,
+    canvasH: canvas.h,
+    // Upscaled to 4K unless the canvas is already there. Nearest neighbour, so
+    // it adds no information — only room for YouTube's encoder to blur into.
+    uploadW: UPSCALE_W,
+    uploadH: UPSCALE_H,
     gridW,
     gridH,
     innerW,
@@ -104,6 +130,24 @@ export const DENSE: Layout = layoutFor('dense', 2, '26', 1080);
 export const WIDE: Layout = layoutFor('wide', 4, '10', 1080);
 
 /**
+ * 2-pixel blocks drawn straight at 3840x2160: 257656 bytes a frame, 5.9 MiB a
+ * second — four times `dense`.
+ *
+ * The margin `dense` buys by drawing at 1080p and doubling is real, and this
+ * spends it. What it buys back is everything downstream: a 2 GiB file is 2.6 GB
+ * of video instead of 10.5, and a quarter of the frames to decode. Measured on
+ * the pipeline as it stands, that is the difference between a restore of an
+ * hour and one of a few minutes.
+ *
+ * The trade is that it can only ever be read from a 2160p rendition — at 1080p
+ * a block is half a pixel, which is not a block at all — and YouTube spends
+ * fewer bits per pixel up there than it does at 1080p. That is the number the
+ * round-trip test exists to hold: this stays out of `DEFAULT_LAYOUT` until it
+ * survives a real upload, and `CODEC_LAYOUT=ultra` is how it gets one.
+ */
+export const ULTRA: Layout = layoutFor('ultra', 2, '20', 2160, { w: UPSCALE_W, h: UPSCALE_H });
+
+/**
  * Candidates a decoder tries, densest first.
  *
  * Nothing in a frame announces which layout wrote it — the header is drawn
@@ -111,7 +155,11 @@ export const WIDE: Layout = layoutFor('wide', 4, '10', 1080);
  * finds out by parsing instead: a 4-byte magic and a CRC over the whole frame
  * do not accept the wrong grid.
  */
-export const LAYOUTS: Layout[] = [DENSE, WIDE];
+// Densest first: the decoder tries each against a frame until one parses, and
+// a coarser grid can misread a finer one's frame as noise rather than failing
+// cleanly. `ultra` leads because a video written by it is unreadable by the
+// other two, so a wrong guess there is not a near miss.
+export const LAYOUTS: Layout[] = [ULTRA, DENSE, WIDE];
 
 export const DEFAULT_LAYOUT = DENSE;
 

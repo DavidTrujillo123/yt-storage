@@ -212,6 +212,40 @@ export class YtdlpService {
     return process.env.YTDLP_HTTP_CHUNK_SIZE || DEFAULT_CHUNK_SIZE;
   }
 
+  /**
+   * Whether downloads are handed to aria2, and with them the ability to stream.
+   *
+   * Ranged requests reset the throttle but yt-dlp asks for one range at a time,
+   * so a restore is still one connection deep and YouTube tightens it as the
+   * download runs: measured at 6.3 MB/s at the start and 2.5 MB/s an hour in.
+   * aria2 asks for sixteen ranges at once, which the per-connection throttle
+   * has no answer for.
+   *
+   * The cost is that aria2 writes those sixteen ranges into the file *at once*,
+   * so what is on disk is a file with holes rather than a growing prefix — and
+   * the decoder reads a prefix. Streaming the decode alongside the download is
+   * therefore off whenever this is on, and `RestoreService` asks before it
+   * chooses. That trade is worth measuring rather than assuming: the decode is
+   * about eleven minutes for two gigabytes, and it only pays for itself if the
+   * download saves more than that.
+   */
+  get external(): string | null {
+    const asked = process.env.YTDLP_EXTERNAL_DOWNLOADER?.trim();
+    return asked && asked !== 'none' ? asked : null;
+  }
+
+  /** The flags for it: sixteen connections, one-megabyte pieces, no preallocation. */
+  private get externalArgs(): string[] {
+    const downloader = this.external;
+    if (!downloader) return [];
+    return [
+      // Scoped to plain HTTP so the HLS ladder keeps its own fragment
+      // concurrency, which already saturates the link.
+      '--downloader', `http:${downloader}`,
+      '--downloader-args', `${downloader}:${process.env.YTDLP_EXTERNAL_ARGS ?? DEFAULT_EXTERNAL_ARGS}`,
+    ];
+  }
+
   /** What the operator asked for, before anything YouTube has said about it. */
   private get configuredFragments(): number {
     const asked = Number(process.env.YTDLP_CONCURRENT_FRAGMENTS);
@@ -383,6 +417,9 @@ export class YtdlpService {
             // as one throttled stream otherwise. Both are set because which of
             // the two a video answers with is not known here.
             '--http-chunk-size', this.chunkSize,
+            // A section is seconds of video and the throttle never gets going,
+            // so it keeps the native downloader and the streaming decode with it.
+            ...(section ? [] : this.externalArgs),
             // One progress line per update instead of a carriage-returned bar,
             // and only the two numbers this needs. `total_bytes` is absent
             // until the download starts and stays NA for some fragmented
@@ -478,6 +515,9 @@ const DEFAULT_FRAGMENTS = 16;
 
 /** Ten megabytes a range: big enough that the requests are noise, small enough to reset the throttle. */
 const DEFAULT_CHUNK_SIZE = '10M';
+
+/** Sixteen connections is aria2's own cap per server, and the point of using it. */
+const DEFAULT_EXTERNAL_ARGS = '-x16 -s16 -k1M --file-allocation=none --summary-interval=5';
 
 /**
  * The floor the back-off will not go under.

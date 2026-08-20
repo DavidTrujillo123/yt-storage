@@ -80,8 +80,15 @@ FROM node:25-trixie-slim AS runtime
 #
 # This image carried chromium, Xvfb, x11vnc and noVNC to do it in-page instead.
 # That was roughly 600MB of it.
+#
+# aria2 is here for one number. A DASH rendition is a single file behind a
+# single URL, and YouTube throttles a single connection: measured at 0.8 MB/s
+# on a link doing 37 MB/s, which turned a ten-gigabyte restore into three and a
+# half hours. Ranged requests took it to 2.5-6 MB/s; aria2 asks for sixteen of
+# those ranges at once, which is the only thing left that the throttle cannot
+# answer. About 1.5 MB of image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg python3 python3-pip ca-certificates tini \
+      ffmpeg python3 python3-pip ca-certificates tini aria2 \
     && pip3 install --break-system-packages --no-cache-dir yt-dlp yt-dlp-ejs \
     && rm -rf /var/lib/apt/lists/*
 

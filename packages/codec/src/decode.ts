@@ -239,6 +239,13 @@ async function readGroups(
   enough?: (stats: Counters) => boolean,
   flush?: Flush,
   follow?: string,
+  /**
+   * Sampling threads for this read. Defaulted from the machine, and passed in
+   * only by a caller running several reads at once: eight ranges each opening
+   * ten workers is eighty threads on twelve cores, which measured slower than
+   * one read on its own — the decode spends its time being rescheduled.
+   */
+  workers = workerCount(),
 ): Promise<{ groups: Groups; stats: Counters }> {
   const groups: Groups = new Map();
   const stats = counters();
@@ -247,7 +254,6 @@ async function readGroups(
   // start one still decodes, one frame at a time, rather than failing. The
   // frame size comes from the open stream, which may be scaling the video
   // down, and never from the file's own dimensions.
-  const workers = workerCount();
   const raw =
     workers > 1 ? await openRawFrames(videoPath, layout, undefined, startSeconds, follow) : null;
   const pool = raw
@@ -396,6 +402,8 @@ export async function decodeRange(
   endGroup: number,
   hint?: Layout,
   seek = true,
+  /** See `readGroups`: shared out when several ranges are decoding at once. */
+  workers?: number,
 ): Promise<{ bytes: Buffer; stats: RangeStats }> {
   if (startGroup < 0 || endGroup < startGroup) {
     throw new Error(`not a group range: ${startGroup}..${endGroup}`);
@@ -426,6 +434,9 @@ export async function decodeRange(
     // is complete when the read has moved on from it, and a group's frames are
     // contiguous.
     (seen) => seen.furthestGroup > endGroup,
+    undefined,
+    undefined,
+    workers,
   );
 
   const parts: Buffer[] = [];
