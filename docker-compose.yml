@@ -44,6 +44,10 @@ services:
       # order, so decoding waits for the download to finish. Empty or `none`
       # keeps yt-dlp's own downloader and the overlap.
       YTDLP_EXTERNAL_DOWNLOADER: ${YTDLP_EXTERNAL_DOWNLOADER:-}
+      # Ranges of the video decoded at once. Defaults to half the cores, which
+      # measured 613 seconds against 897 on a 2 GiB restore — a third of the
+      # decode — for 1114% CPU against 225%. Set it to 1 to have the cores back.
+      CODEC_DECODE_JOBS: ${CODEC_DECODE_JOBS:-}
       # A restore's wall clock is essentially all download — measured at 5.6
       # MB/s across 3.97 GB, with bursts to 13 and stalls near zero, which is
       # per-connection throttling rather than a full link. This is the ceiling

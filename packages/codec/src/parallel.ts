@@ -25,37 +25,28 @@ function rangeBytes(): number {
 }
 
 /**
- * How many ranges run at once, and why the answer is one until asked otherwise.
+ * How many ranges decode at once.
  *
- * Splitting the decode across cores works — it is correct, and it is faster —
- * but only just: measured on a 2 GiB restore served at 2160p, 660 seconds
- * against 750 for the sequential decode, an 12% saving for five times the CPU
- * (1114% against 225%). That ratio says the wall is not the core count. At
- * 41,700 frames in 660 seconds this machine is decoding about 63 frames a
- * second of 4K VP9 however the work is sliced, and five ffmpeg processes
- * contend for memory bandwidth rather than adding throughput.
+ * Measured twice on the same 2 GiB restore, because the first number was wrong
+ * and nearly cost the feature: a run that ended in an error reported 660
+ * seconds of decode, which read as a 12% saving and an argument for leaving
+ * this off. The clean run put it at 506 against the sequential 750 — a third
+ * of the decode gone, and 613 seconds against 897 for the whole restore.
  *
- * So it ships off. `CODEC_DECODE_JOBS` turns it on for a machine with more of
- * whatever this one ran out of, and `suggestedJobs()` is a sensible value for
- * it there. Twelve percent is not worth five times the power draw by default,
- * and a knob that lies about its benefit is worse than no knob.
+ * It costs what it looks like it costs: 1114% CPU against 225%. That is the
+ * trade, stated plainly — five cores to save a third of the wall clock on the
+ * phase that is now most of it. `CODEC_DECODE_JOBS` sets it, `0` or `1` turns
+ * it off for a machine that would rather have the cores back.
  */
 export function decodeJobs(): number {
   const asked = Number(process.env.CODEC_DECODE_JOBS);
-  if (Number.isFinite(asked) && asked >= 1) return Math.floor(asked);
-  return 1;
-}
+  if (Number.isFinite(asked) && asked >= 0) return Math.max(1, Math.floor(asked));
 
-/**
- * A reasonable number of ranges for this machine, for whoever turns it on.
- *
- * Half the cores in ranges and the other half in the samplers underneath them.
- * The alternative was measured and is worse: eight ranges with ten workers
- * each is eighty threads on twelve cores, and the decode spent its time being
- * rescheduled — thirteen minutes to reach a quarter of a file the sequential
- * decode finished in twelve and a half.
- */
-export function suggestedJobs(): number {
+  // Half the cores in ranges, the other half in the samplers underneath them.
+  // The alternative was measured and is worse: eight ranges with ten workers
+  // each is eighty threads on twelve cores, and the decode spent its time
+  // being rescheduled — thirteen minutes to reach a quarter of a file the
+  // sequential decode finished in twelve and a half.
   return Math.max(1, Math.min(6, Math.floor((availableParallelism() - 2) / 2)));
 }
 
