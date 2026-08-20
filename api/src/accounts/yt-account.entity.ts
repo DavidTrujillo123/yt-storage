@@ -56,6 +56,32 @@ export class YtAccount {
   @Column({ type: 'varchar', default: 'MISSING' })
   cookieHealth!: CookieHealth;
 
+  /**
+   * Whether the channel has verified a phone number, which is the difference
+   * between a fifteen-minute video and a twelve-hour one.
+   *
+   * Set by the operator rather than detected: YouTube exposes no API that says
+   * "this channel is verified", and the only way to find out by experiment is
+   * to upload something too long — which succeeds, wastes the bandwidth, and
+   * then has its transcode abandoned. So it is a switch, and it decides whether
+   * a large file is stored as one video or split across several.
+   */
+  @Column({ type: 'boolean', default: false })
+  verified!: boolean;
+
+  /**
+   * Whether Google granted the write scope, which renaming and deleting on
+   * YouTube both need and uploading does not.
+   *
+   * Read from the token response at connect time rather than assumed from
+   * what was asked for: an account authorised before this app requested the
+   * scope keeps working for everything else, and the honest answer is what the
+   * consent actually returned. It is also the only way the UI can say "reconnect
+   * to enable this" instead of failing when someone tries.
+   */
+  @Column({ type: 'boolean', default: false })
+  canManage!: boolean;
+
   @Column({ type: 'datetime', nullable: true })
   cookieCheckedAt!: Date | null;
 

@@ -26,7 +26,12 @@ import {
   type CaptureProgress,
 } from './browser-capture';
 import { quotaIsStale, quotaSummary, selectUploadAccount } from './quota';
-import { OAUTH_SCOPES } from '../youtube/constants';
+import {
+  MANAGE_SCOPE,
+  OAUTH_SCOPES,
+  UNVERIFIED_MAX_VIDEO_SECONDS,
+  VERIFIED_MAX_VIDEO_SECONDS,
+} from '../youtube/constants';
 
 /**
  * Where the browser lands after Google sends it back, as a closed set.
@@ -64,6 +69,8 @@ const WITH_SECRETS = {
   cookieHealth: true,
   uploadsToday: true,
   quotaResetAt: true,
+  verified: true,
+  canManage: true,
 } as const;
 
 @Injectable()
@@ -103,6 +110,13 @@ export class AccountsService {
       cookieHealth: account.cookieHealth,
       cookieCheckedAt: account.cookieCheckedAt,
       quota: this.quotaSummary(account),
+      verified: account.verified,
+      // What the switch is worth, in the unit the operator cares about: a
+      // group is a second of video, so the cap is a size.
+      maxVideoSeconds: account.verified ? VERIFIED_MAX_VIDEO_SECONDS : UNVERIFIED_MAX_VIDEO_SECONDS,
+      // Whether Google granted the write scope. Renaming and deleting on
+      // YouTube both need it, and neither can be offered honestly without it.
+      canManage: account.canManage,
       ready: account.refreshToken !== null && account.cookieJar !== null,
       createdAt: account.createdAt,
     }));
@@ -177,10 +191,50 @@ export class AccountsService {
       );
     }
 
+    // What Google actually granted, not what was asked for. The two differ
+    // whenever a scope is missing from the project's consent screen: the
+    // authorisation succeeds, the token comes back one scope short, and the
+    // first rename fails with "Request had insufficient authentication
+    // scopes" — which is a confusing way to learn that a checkbox is missing
+    // in Cloud Console. Recorded here so the accounts page can say it plainly.
+    const granted = String(tokens.scope ?? '').split(' ');
+    const canManage = granted.includes(MANAGE_SCOPE);
+
     await this.accounts.update(accountId, {
       refreshToken: this.settings.seal(tokens.refresh_token),
+      canManage,
     });
-    this.log.log(`account ${account.label} connected`);
+    this.log.log(
+      `account ${account.label} connected${canManage ? '' : ' without the write scope, so it cannot rename or delete on YouTube'}`,
+    );
+  }
+
+  /** Turns the "channel is verified" switch on or off; see `YtAccount.verified`. */
+  async setVerified(userId: string, id: string, verified: boolean): Promise<YtAccount> {
+    const account = await this.accounts.findOne({ where: { id, userId } });
+    if (!account) throw new NotFoundException(`no account ${id}`);
+
+    await this.accounts.update(account.id, { verified });
+    this.log.log(`account ${account.label} marked ${verified ? 'verified' : 'unverified'}`);
+    return { ...account, verified };
+  }
+
+  /**
+   * The longest video this user's channels will accept.
+   *
+   * The best of their accounts, because a file is stored on whichever account
+   * has quota when its turn comes, and splitting to fit the worst one would cut
+   * files nobody needed cut. `YOUTUBE_MAX_VIDEO_SECONDS` overrides both, for an
+   * operator who knows something this app does not.
+   */
+  async capSecondsFor(userId: string): Promise<number> {
+    const override = Number(process.env.YOUTUBE_MAX_VIDEO_SECONDS);
+    if (Number.isFinite(override) && override > 0) return override;
+
+    const accounts = await this.accounts.find({ where: { userId } });
+    return accounts.some((account) => account.verified)
+      ? VERIFIED_MAX_VIDEO_SECONDS
+      : UNVERIFIED_MAX_VIDEO_SECONDS;
   }
 
   /** A channel's uploads playlist never changes, so it is learned once. */

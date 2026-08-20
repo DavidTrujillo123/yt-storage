@@ -16,7 +16,7 @@ import { writeTar } from './tar';
 import { ENCODE_QUEUE, FileJob, UPLOAD_QUEUE, VERIFY_QUEUE, verifyJobOptions } from '../jobs/queues';
 import { AccountsService } from '../accounts/accounts.service';
 import { CodecService } from '../codec/codec.service';
-import { MAX_VIDEO_SECONDS } from '../youtube/constants';
+
 import { parseContainerVideo, YoutubeService } from '../youtube/youtube.service';
 
 /**
@@ -114,7 +114,7 @@ export class FilesService {
     const { size } = await stat(sourcePath);
     const sha256 = await this.hash(sourcePath);
 
-    const limit = await this.bytesPerVideo();
+    const limit = await this.bytesPerVideo(userId);
     if (size > limit) return this.ingestInParts(userId, sourcePath, name, size, sha256, limit);
 
     const file = await this.files.save(
@@ -140,7 +140,7 @@ export class FilesService {
    * group of a part past the cap by a frame or two, which YouTube answers by
    * throwing the whole upload away.
    */
-  private async bytesPerVideo(): Promise<number> {
+  private async bytesPerVideo(userId: string): Promise<number> {
     // The grid the encoder *writes* with, which is not what `layout(null)`
     // answers: null means "a video that predates the column", and its fallback
     // is the wide grid every one of those used. Asking that way cut a 2 GiB
@@ -149,7 +149,8 @@ export class FilesService {
     const specs = await this.codec.specs();
     const writing = specs.layouts.find((layout) => layout.id === specs.writing);
     if (!writing) throw new Error(`the codec writes with ${specs.writing}, which it did not describe`);
-    return Math.floor(MAX_VIDEO_SECONDS * writing.groupBytes * PART_MARGIN);
+    const seconds = await this.accounts.capSecondsFor(userId);
+    return Math.floor(seconds * writing.groupBytes * PART_MARGIN);
   }
 
   /**
@@ -585,14 +586,29 @@ export class FilesService {
     return this.getById(file.id);
   }
 
-  async remove(userId: string, id: string): Promise<void> {
+  async remove(userId: string, id: string, alsoOnYoutube = false): Promise<void> {
     const file = await this.get(userId, id);
 
     // A parent's parts are not reachable from any route, so deleting the row
     // the operator sees has to take them with it or they become orphans that
     // nothing lists and nothing can remove.
     for (const part of await this.partsOf(file.id)) {
-      await this.remove(userId, part.id);
+      await this.remove(userId, part.id, alsoOnYoutube);
+    }
+
+    // Only when asked, and only when the account granted the write scope.
+    // Deleting the video is the one irreversible half of this: the row can be
+    // rebuilt from the channel, and the channel cannot be rebuilt from the row.
+    if (alsoOnYoutube && file.videoId && file.ytAccountId) {
+      try {
+        const account = await this.accounts.loadSecretById(file.ytAccountId);
+        await this.youtube.delete(account, file.videoId);
+        this.log.log(`deleted video ${file.videoId} of ${file.name}`);
+      } catch (error) {
+        // Never fatal: the row is going either way, and a video left behind is
+        // a tidy-up rather than a failure the operator can act on.
+        this.log.warn(`could not delete video ${file.videoId}: ${(error as Error).message}`);
+      }
     }
 
     for (const path of [file.sourcePath, file.videoPath]) {

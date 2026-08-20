@@ -19,6 +19,7 @@ import type { Request, Response } from 'express';
 import { SessionGuard } from '../auth/session.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { User } from '../auth/user.entity';
+import { UNVERIFIED_MAX_VIDEO_SECONDS, VERIFIED_MAX_VIDEO_SECONDS } from '../youtube/constants';
 import { AccountsService, isReturnTarget, parseOAuthState } from './accounts.service';
 
 class ImportCookiesDto {
@@ -133,6 +134,29 @@ export class AccountsController {
   async remove(@CurrentUser() user: User, @Param('id') id: string) {
     await this.accounts.remove(user.id, id);
     return { deleted: id };
+  }
+
+  /**
+   * The verified switch. It decides how long a video this channel accepts, and
+   * therefore whether a large file is stored whole or split across several.
+   *
+   * Asserted by the operator because YouTube offers no way to ask: the only
+   * test is an upload, and an upload that is too long is accepted, abandoned
+   * mid-transcode and deleted.
+   */
+  @Post(':id/verified')
+  @UseGuards(SessionGuard)
+  async setVerified(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Body() body: { verified?: boolean },
+  ) {
+    const account = await this.accounts.setVerified(user.id, id, Boolean(body.verified));
+    return {
+      id: account.id,
+      verified: account.verified,
+      maxVideoSeconds: account.verified ? VERIFIED_MAX_VIDEO_SECONDS : UNVERIFIED_MAX_VIDEO_SECONDS,
+    };
   }
 
   @Get(':id/connect')

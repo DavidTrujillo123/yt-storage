@@ -15,6 +15,16 @@ describe('refusing a video the channel will not accept', () => {
     assert.equal(tooLongForYoutube(cap * 30), null, 'exactly the cap');
   });
 
+  it('measures against the channel that is taking the file', () => {
+    // 23:10 is over the unverified cap and nowhere near the verified one, and
+    // the same encode is fine or refused depending only on which account has
+    // quota when its turn comes.
+    assert.match(tooLongForYoutube(41700, false) ?? '', /too long/);
+    assert.equal(tooLongForYoutube(41700, true), null);
+    // Twelve hours is the verified cap; a minute past it is refused again.
+    assert.match(tooLongForYoutube((12 * 3600 + 60) * 30, true) ?? '', /too long/);
+  });
+
   it('refuses the 2 GiB encode that YouTube threw away', () => {
     // 41,700 frames is what `big-2gb.bin` came to: 23:10 against a 15:00 cap.
     const message = tooLongForYoutube(41700);
@@ -23,10 +33,16 @@ describe('refusing a video the channel will not accept', () => {
     assert.match(message ?? '', /15:00/);
   });
 
-  it('names both ways out, because only one of them is in this app', () => {
-    const message = tooLongForYoutube(41700) ?? '';
-    assert.match(message, /Verify the channel/);
-    assert.match(message, /split the file/);
+  it('names the way out that applies to this channel', () => {
+    // Unverified: verifying is the fix, and the switch is where it is claimed.
+    const unverified = tooLongForYoutube(41700, false) ?? '';
+    assert.match(unverified, /Verify the channel/);
+    assert.match(unverified, /switch/);
+
+    // Verified and still too long: verifying is no longer advice worth giving.
+    const verified = tooLongForYoutube((13 * 3600) * 30, true) ?? '';
+    assert.match(verified, /Split the file/);
+    assert.doesNotMatch(verified, /Verify the channel/);
   });
 
   it('says nothing when the frame count is unknown', () => {

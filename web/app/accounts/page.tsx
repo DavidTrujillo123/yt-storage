@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { api, ApiError, formatWhen } from '@/lib/api';
+import { api, ApiError, formatBytes, formatWhen } from '@/lib/api';
 import type { Account, CookieCapture, Status } from '@/lib/api';
 import { useSession } from '@/lib/use-session';
 import { useCookieCapture } from '@/lib/use-capture';
@@ -63,6 +63,20 @@ function CapturePanel({
 }
 
 /** useSearchParams needs a boundary; the OAuth callback returns with ?connected=1. */
+/**
+ * What one second of video holds, so the switch can be explained in bytes
+ * rather than in minutes. The codec's `dense` grid: 24 data shards of 64408
+ * bytes. Hard-coded here on purpose — it is a label, and a wrong label is a
+ * cosmetic bug where fetching it would be a request on every page load.
+ */
+const GROUP_BYTES = 24 * 64408;
+
+function formatClock(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.round((seconds % 3600) / 60);
+  return hours ? `${hours}h${minutes ? ` ${minutes}m` : ''}` : `${minutes} min`;
+}
+
 export default function AccountsPage() {
   return (
     <Suspense fallback={<p className="muted">Loading…</p>}>
@@ -137,6 +151,15 @@ function Accounts() {
     }
   }
 
+  async function setVerified(account: Account, verified: boolean) {
+    setError(null);
+    await api(`/accounts/${account.id}/verified`, {
+      method: 'POST',
+      body: JSON.stringify({ verified }),
+    }).catch((failure) => setError(failure.message));
+    await refresh();
+  }
+
   async function remove(account: Account) {
     if (!confirm(`Delete ${account.label}? Files already stored through it keep their video ids.`)) return;
     await api(`/accounts/${account.id}`, { method: 'DELETE' }).catch((failure) => setError(failure.message));
@@ -184,6 +207,27 @@ function Accounts() {
             </button>
           </form>
           {error && <p className="error">{error}</p>}
+        </section>
+
+        <section className="panel">
+          <h2>Verifying the channel</h2>
+          <p className="note">
+            A file becomes a video, and its size becomes the video&rsquo;s length: one second of video
+            holds 1.47 MiB. A channel that has not verified a phone number accepts videos of{' '}
+            <strong>15 minutes</strong>, which is about <strong>1.3 GiB</strong> a file. Verified, it
+            accepts <strong>12 hours</strong> — roughly <strong>48 GiB</strong> a file.
+          </p>
+          <p className="note">
+            Past the limit YouTube does not refuse the upload. It accepts it, publishes the video, then
+            abandons the transcode and deletes it — so the bandwidth and one of the day&rsquo;s uploads
+            are spent for nothing. That is why this app splits a large file into several videos while the
+            switch is off, and stores it as one while it is on.
+          </p>
+          <p className="note">
+            Verify at <span className="mono">Studio → Settings → Channel → Feature eligibility</span>, then
+            turn the switch on. Re-authorising afterwards also grants the permission this app needs to
+            rename and delete videos on YouTube.
+          </p>
         </section>
 
         <section className="panel">
@@ -238,6 +282,7 @@ function Accounts() {
                 <th>Label</th>
                 <th>OAuth</th>
                 <th>Cookies</th>
+                <th>Channel</th>
                 <th>Quota today</th>
                 <th />
               </tr>
@@ -260,6 +305,36 @@ function Accounts() {
                         {account.cookieHealth.toLowerCase()}
                       </span>
                       <div className="small muted">checked {formatWhen(account.cookieCheckedAt)}</div>
+                    </div>
+                  </td>
+                  {/* The switch that decides whether a big file is stored as
+                      one video or several. Asserted rather than detected:
+                      YouTube has no endpoint that answers it, and the only
+                      experiment is an upload that is thrown away if wrong. */}
+                  <td data-label="Channel">
+                    <div>
+                      <label className="switch">
+                        <input
+                          type="checkbox"
+                          checked={account.verified}
+                          onChange={(event) => setVerified(account, event.target.checked)}
+                        />
+                        <span>verified</span>
+                      </label>
+                      <div className="small muted">
+                        {account.verified
+                          ? `videos up to ${formatClock(account.maxVideoSeconds)} — about ${formatBytes(
+                              account.maxVideoSeconds * GROUP_BYTES,
+                            )} a file`
+                          : `videos up to ${formatClock(account.maxVideoSeconds)} — about ${formatBytes(
+                              account.maxVideoSeconds * GROUP_BYTES,
+                            )} a file, larger ones are split across several`}
+                      </div>
+                      {!account.canManage && account.connected && (
+                        <div className="small muted">
+                          cannot rename or delete on YouTube — re-authorise to grant it
+                        </div>
+                      )}
                     </div>
                   </td>
                   <td className="muted" data-label="Quota today">

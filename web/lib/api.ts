@@ -97,6 +97,12 @@ export interface Account {
   cookieCheckedAt: string | null;
   /** Counted in uploads against YouTube's 100/day, not in quota units. */
   quota: { uploadsUsed: number; uploadsLeft: number; dailyLimit: number };
+  /** Whether the channel has verified a phone number; set by hand, see the switch. */
+  verified: boolean;
+  /** What that switch is worth: 900s unverified, 43200s verified. */
+  maxVideoSeconds: number;
+  /** Whether Google granted the scope renaming and deleting on YouTube need. */
+  canManage: boolean;
   ready: boolean;
   createdAt: string;
 }

@@ -168,8 +168,24 @@ export default function FilesPage() {
   }
 
   async function remove(file: StoredFile) {
-    if (!confirm(`Delete ${file.name}? The video stays on YouTube; this only forgets it.`)) return;
-    await api(`/files/${file.id}`, { method: 'DELETE' }).catch((failure) => setError(failure.message));
+    // Two different questions, because they have different consequences and
+    // only one of them can be undone. Forgetting a row is recoverable — Rebuild
+    // from channel finds it again — and deleting the video is not, so it is
+    // only ever offered when an account can actually do it, and never as the
+    // default answer.
+    const canManage = status?.accounts.some((account) => account.canManage);
+    if (!confirm(`Delete ${file.name}? This forgets it here.`)) return;
+
+    const alsoOnYoutube =
+      canManage &&
+      confirm(
+        `Delete the video on YouTube too?\n\n` +
+          'OK deletes it for good. Cancel keeps it, so this file can be rebuilt from the channel later.',
+      );
+
+    await api(`/files/${file.id}${alsoOnYoutube ? '?youtube=1' : ''}`, { method: 'DELETE' }).catch(
+      (failure) => setError(failure.message),
+    );
     await refresh();
   }
 

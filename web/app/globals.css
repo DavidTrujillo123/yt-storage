@@ -303,6 +303,27 @@ td.actions .row {
 }
 
 /*
+ * A switch the operator sets, rather than a badge the app computed. It reads
+ * as a control on purpose: the two are one column apart in these rows, and a
+ * checkbox that looked like a status would be either ignored or feared.
+ */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--ok);
+  cursor: pointer;
+}
+
+/*
  * State, as one shape repeated: same pill, same place in every row, with a dot
  * that carries the tone. The dot matters — colour alone is not a distinction
  * for a reader who cannot see it, and a shared shape is what lets the eye group

@@ -61,4 +61,10 @@ export const DAILY_UPLOAD_LIMIT = 100;
  * raises it to twelve hours, which is why this is an env var and not a
  * constant to live with.
  */
-export const MAX_VIDEO_SECONDS = Number(process.env.YOUTUBE_MAX_VIDEO_SECONDS) || 15 * 60;
+export const UNVERIFIED_MAX_VIDEO_SECONDS = 15 * 60;
+
+/** What a channel accepts once a phone number is verified: twelve hours. */
+export const VERIFIED_MAX_VIDEO_SECONDS = 12 * 60 * 60;
+
+/** The scope renaming and deleting need, which uploading does not carry. */
+export const MANAGE_SCOPE = 'https://www.googleapis.com/auth/youtube.force-ssl';

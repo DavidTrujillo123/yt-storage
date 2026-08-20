@@ -443,7 +443,7 @@ function Cookies({
 
       <h3 style={{ marginBottom: '0.35rem' }}>Or upload a cookies.txt</h3>
       <p className="small muted">
-        Any Netscape-format export works — a cookie exporter extension, or{' '}
+        Any Netscape-format export works — Cookie-Editor&apos;s <strong>Netscape</strong> export, or{' '}
         <span className="mono">pnpm run cookies</span> on a machine with a browser, which signs in to
         a throwaway profile and deletes it afterwards:
       </p>

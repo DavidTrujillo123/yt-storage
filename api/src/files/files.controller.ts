@@ -356,10 +356,19 @@ export class FilesController {
     return this.files.retry(user.id, id);
   }
 
+  /**
+   * `?youtube=1` deletes the videos as well, which needs the write scope the
+   * accounts page reports as `canManage`. Off by default: forgetting a row is
+   * reversible from the channel, and deleting the channel's copy is not.
+   */
   @Delete(':id')
-  async remove(@CurrentUser() user: User, @Param('id') id: string) {
-    await this.files.remove(user.id, id);
-    return { deleted: id };
+  async remove(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Query('youtube') youtube?: string,
+  ) {
+    await this.files.remove(user.id, id, youtube === '1' || youtube === 'true');
+    return { deleted: id, youtube: youtube === '1' || youtube === 'true' };
   }
 }
 

@@ -4,7 +4,7 @@ import { Job, Queue } from 'bullmq';
 import { FilesService } from '../files/files.service';
 import { AccountsService } from '../accounts/accounts.service';
 import { YoutubeService } from '../youtube/youtube.service';
-import { MAX_VIDEO_SECONDS } from '../youtube/constants';
+import { UNVERIFIED_MAX_VIDEO_SECONDS, VERIFIED_MAX_VIDEO_SECONDS } from '../youtube/constants';
 import { FileJob, UPLOAD_QUEUE, VERIFY_QUEUE, verifyJobOptions } from './queues';
 
 /** One group is one second of video; the codec's own frame rate, not a guess. */
@@ -36,24 +36,24 @@ export class UploadProcessor extends WorkerHost {
       return;
     }
 
-    // Before a byte goes up, not after: past the channel's cap `videos.insert`
-    // still succeeds and YouTube quietly abandons the transcode, which costs
-    // one of the day's uploads, ten gigabytes of bandwidth and — worst of all
-    // — leaves a video id on the row that makes the file look stored. This is
-    // the check that turns that into an error the operator can act on while
-    // the local copy is still there.
-    const tooLong = tooLongForYoutube(file.frames);
-    if (tooLong) {
-      await this.files.fail(file.id, new Error(tooLong));
-      return;
-    }
-
     try {
       await this.files.setStatus(file.id, 'UPLOADING');
 
       // Chosen at upload time rather than at ingest: an account can run out of
       // quota, lose its cookies, or be deleted while the file sits in the queue.
       const account = await this.accounts.pickForUpload(file.userId);
+
+      // Before a byte goes up, and against the cap of the channel actually
+      // receiving it: past that cap `videos.insert` still succeeds and YouTube
+      // quietly abandons the transcode, which costs one of the day's uploads,
+      // ten gigabytes of bandwidth and — worst of all — leaves a video id on
+      // the row that makes the file look stored. Checked here rather than at
+      // ingest because which account takes the file is only known now.
+      const tooLong = tooLongForYoutube(file.frames, account.verified);
+      if (tooLong) {
+        await this.files.fail(file.id, new Error(tooLong));
+        return;
+      }
 
       // A part carries its position so the channel reads `Cursos Virtuales p1`,
       // `p2`, and so a rebuild from the channel alone can put the pieces back
@@ -103,15 +103,23 @@ export class UploadProcessor extends WorkerHost {
  * ways out are raising the cap on the channel and making the file smaller, so
  * both are named.
  */
-export function tooLongForYoutube(frames: number | null, fps = FPS): string | null {
+export function tooLongForYoutube(
+  frames: number | null,
+  verified = false,
+  fps = FPS,
+): string | null {
   if (!frames) return null;
+  const cap = verified ? VERIFIED_MAX_VIDEO_SECONDS : UNVERIFIED_MAX_VIDEO_SECONDS;
   const seconds = Math.ceil(frames / fps);
-  if (seconds <= MAX_VIDEO_SECONDS) return null;
+  if (seconds <= cap) return null;
 
   return (
     `too long for this channel: the encode is ${clock(seconds)} of video and the limit is ` +
-    `${clock(MAX_VIDEO_SECONDS)}. Verify the channel's phone number to raise it to 12 hours, ` +
-    'or split the file and upload the parts'
+    `${clock(cap)}. ` +
+    (verified
+      ? 'Split the file and upload the parts'
+      : "Verify the channel's phone number to raise it to 12 hours, or turn the switch on in " +
+        'Accounts if it is already verified')
   );
 }
 

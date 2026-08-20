@@ -70,11 +70,53 @@ export function CookiePaste({
   return (
     <>
       <p className="small muted">
-        Nothing to install. It has to be the browser signed in as{' '}
+        Whichever way you do this, it has to be the browser signed in as{' '}
         <strong>the same Google account you authorised in step 3</strong> — the jar and the OAuth
         token have to belong to one account, or the app will upload as one channel and be unable to
         read back what it stored.
       </p>
+
+      {/*
+        The extension first and the DevTools walk second. Both produce the same
+        string, but the manual one is six steps of finding the right request and
+        copying a value that wraps across half a screen, and the mistakes it
+        invites — a row from another domain, half the header, the wrong account
+        — all store cleanly and only fail later, at a download.
+      */}
+      <h4 style={{ margin: '0.9rem 0 0.35rem' }}>The easy way: Cookie-Editor</h4>
+      <p className="small muted">
+        Install{' '}
+        <a
+          href="https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Cookie-Editor
+        </a>{' '}
+        (Chrome, Brave, Edge), open <span className="mono">youtube.com</span> signed in as that
+        account, click the extension, then the <strong>export</strong> button at the bottom right and
+        choose <strong>Header String</strong>. That copies exactly what this box wants. Paste it below
+        and save.
+      </p>
+      <p className="small muted">
+        <strong>Netscape</strong> in the same menu produces a{' '}
+        <span className="mono">cookies.txt</span> instead, which the upload button further down takes.
+        Either is fine; <strong>JSON</strong> is the one shape this app does not read.
+      </p>
+
+      <figure style={{ margin: '0 0 0.9rem' }}>
+        <img
+          src="/cookie-editor.png"
+          alt="Cookie-Editor open on youtube.com, listing the __Secure-1PSID and SAPISID cookies, with the Export As menu showing JSON, Header String and Netscape"
+          style={{ width: '100%', maxWidth: '34rem', borderRadius: '6px', display: 'block' }}
+        />
+        <figcaption className="small muted" style={{ marginTop: '0.3rem' }}>
+          The export button is the rightmost of the four at the bottom.{' '}
+          <strong>Header String</strong> is the one to pick.
+        </figcaption>
+      </figure>
+
+      <h4 style={{ margin: '0.9rem 0 0.35rem' }}>Or by hand, with nothing installed</h4>
       <ol className="small muted" style={{ margin: '0 0 0.6rem 1.1rem', lineHeight: 1.7 }}>
         <li>
           Open a <strong>private window</strong> and sign in to <span className="mono">youtube.com</span>{' '}
