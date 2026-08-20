@@ -191,6 +191,27 @@ export class YtdlpService {
     return String(Math.max(MIN_FRAGMENTS, Math.min(this.ceiling, this.configuredFragments)));
   }
 
+  /**
+   * The size of each ranged request a download is cut into.
+   *
+   * `--concurrent-fragments` only helps a stream that arrives in fragments,
+   * which the HLS ladder does — 102 of them for a ten-minute video, fetched
+   * thirty-two at a time, measured at 56 MB/s. A DASH rendition is one file
+   * behind one URL, so those thirty-two do nothing and the whole restore rides
+   * a single connection, which YouTube throttles: measured on `5l7kjzbaVDY`,
+   * 0.8 MB/s against a link that does 37 MB/s to Cloudflare from the same
+   * container. Ten gigabytes at that rate is an hour of waiting on a file the
+   * decoder consumes in minutes.
+   *
+   * Asking for the file in ten-megabyte ranges is what breaks that: the
+   * throttle applies to a continuous stream, and each ranged GET starts a new
+   * one. It costs a request per chunk — a thousand for a ten-gigabyte video,
+   * which is nothing next to the fragments an HLS download already makes.
+   */
+  private get chunkSize(): string {
+    return process.env.YTDLP_HTTP_CHUNK_SIZE || DEFAULT_CHUNK_SIZE;
+  }
+
   /** What the operator asked for, before anything YouTube has said about it. */
   private get configuredFragments(): number {
     const asked = Number(process.env.YTDLP_CONCURRENT_FRAGMENTS);
@@ -358,6 +379,10 @@ export class YtdlpService {
             // until somebody deletes the file by hand.
             '--force-overwrites',
             '--concurrent-fragments', this.fragments,
+            // Fragments cover the HLS ladder; ranges cover DASH, which arrives
+            // as one throttled stream otherwise. Both are set because which of
+            // the two a video answers with is not known here.
+            '--http-chunk-size', this.chunkSize,
             // One progress line per update instead of a carriage-returned bar,
             // and only the two numbers this needs. `total_bytes` is absent
             // until the download starts and stays NA for some fragmented
@@ -450,6 +475,9 @@ const PROGRESS_PREFIX = 'yts-progress';
 
 /** Fragments fetched at once when nothing says otherwise. */
 const DEFAULT_FRAGMENTS = 16;
+
+/** Ten megabytes a range: big enough that the requests are noise, small enough to reset the throttle. */
+const DEFAULT_CHUNK_SIZE = '10M';
 
 /**
  * The floor the back-off will not go under.
