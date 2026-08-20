@@ -322,6 +322,34 @@ export class FilesController {
     return this.restoring.get(id);
   }
 
+  /**
+   * Renames a file here and on the channel.
+   *
+   * `stale` counts the videos YouTube refused to retitle, which is how an
+   * account connected before the write scope existed says so: the rename
+   * itself always went through.
+   */
+  @Post(':id/name')
+  async rename(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @Body() body: { name?: string },
+  ) {
+    const { file, stale } = await this.files.rename(user.id, id, body.name ?? '');
+    return {
+      id: file.id,
+      name: file.name,
+      stale,
+      ...(stale
+        ? {
+            message:
+              `renamed here, but ${stale} video${stale === 1 ? '' : 's'} kept the old title - ` +
+              'reconnect the account to let this app rename on YouTube too',
+          }
+        : {}),
+    };
+  }
+
   /** Puts a failed file back on the queue it stopped at, from whatever is still on disk. */
   @Post(':id/retry')
   retry(@CurrentUser() user: User, @Param('id') id: string) {

@@ -4,7 +4,11 @@ import { Job, Queue } from 'bullmq';
 import { FilesService } from '../files/files.service';
 import { AccountsService } from '../accounts/accounts.service';
 import { YoutubeService } from '../youtube/youtube.service';
+import { MAX_VIDEO_SECONDS } from '../youtube/constants';
 import { FileJob, UPLOAD_QUEUE, VERIFY_QUEUE, verifyJobOptions } from './queues';
+
+/** One group is one second of video; the codec's own frame rate, not a guess. */
+const FPS = 30;
 
 /**
  * Concurrency is 1 and there is no retry storm on purpose: every videos.insert
@@ -32,6 +36,18 @@ export class UploadProcessor extends WorkerHost {
       return;
     }
 
+    // Before a byte goes up, not after: past the channel's cap `videos.insert`
+    // still succeeds and YouTube quietly abandons the transcode, which costs
+    // one of the day's uploads, ten gigabytes of bandwidth and — worst of all
+    // — leaves a video id on the row that makes the file look stored. This is
+    // the check that turns that into an error the operator can act on while
+    // the local copy is still there.
+    const tooLong = tooLongForYoutube(file.frames);
+    if (tooLong) {
+      await this.files.fail(file.id, new Error(tooLong));
+      return;
+    }
+
     try {
       await this.files.setStatus(file.id, 'UPLOADING');
 
@@ -39,10 +55,22 @@ export class UploadProcessor extends WorkerHost {
       // quota, lose its cookies, or be deleted while the file sits in the queue.
       const account = await this.accounts.pickForUpload(file.userId);
 
+      // A part carries its position so the channel reads `Cursos Virtuales p1`,
+      // `p2`, and so a rebuild from the channel alone can put the pieces back
+      // in order. The name on a part row already ends in `.partNofM`; the
+      // parent's plain name is what belongs on the video.
+      const part = file.parentId
+        ? {
+            index: file.partIndex ?? 0,
+            count: (await this.files.partsOf(file.parentId)).length,
+          }
+        : undefined;
+      const parent = file.parentId ? await this.files.getById(file.parentId) : null;
+
       const videoId = await this.youtube.upload(
         account,
         file.videoPath,
-        { fileId: file.id, name: file.name, sha256: file.sha256 },
+        { fileId: file.id, name: parent?.name ?? file.name, sha256: file.sha256, part },
         (percent) => void this.files.update(file.id, { progress: percent }),
       );
 
@@ -61,4 +89,32 @@ export class UploadProcessor extends WorkerHost {
       throw error;
     }
   }
+}
+
+/**
+ * The complaint when a video would be longer than the channel accepts, or null.
+ *
+ * `frames` is what the encode actually wrote, so this is exact rather than an
+ * estimate from the file's size — which would be wrong by the compression
+ * ratio, and wrong in the direction that refuses a text file that gzip turns
+ * into one second of video.
+ *
+ * Exported for the test, and worded for whoever reads it in the UI: the two
+ * ways out are raising the cap on the channel and making the file smaller, so
+ * both are named.
+ */
+export function tooLongForYoutube(frames: number | null, fps = FPS): string | null {
+  if (!frames) return null;
+  const seconds = Math.ceil(frames / fps);
+  if (seconds <= MAX_VIDEO_SECONDS) return null;
+
+  return (
+    `too long for this channel: the encode is ${clock(seconds)} of video and the limit is ` +
+    `${clock(MAX_VIDEO_SECONDS)}. Verify the channel's phone number to raise it to 12 hours, ` +
+    'or split the file and upload the parts'
+  );
+}
+
+function clock(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }

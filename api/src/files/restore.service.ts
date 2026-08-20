@@ -1,8 +1,10 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { CodecService, type DecodeResult } from '../codec/codec.service';
 import { CookiesExpiredError, YtdlpService } from '../youtube/ytdlp.service';
 import { MIN_DECODABLE_HEIGHT } from '../youtube/constants';
@@ -124,6 +126,36 @@ export interface SampledCheck {
 }
 
 /**
+ * The complaint when a video is too short to hold the file, or null when it fits.
+ *
+ * The tolerance is one whole group and it only ever runs one way: a rendition
+ * that comes back longer than it went up is normal — YouTube pads the tail —
+ * and a duration reported in whole seconds cannot be trusted to the frame. A
+ * video short by more than a group is missing groups, which is not something
+ * parity can answer for: the redundancy is 6 frames in every 30 within a
+ * group, and nothing spans groups at all.
+ *
+ * Exported for the test rather than left inline because the arithmetic is the
+ * whole check, and getting it wrong in the safe direction fails good files.
+ */
+export function shortUploadMessage(counts: {
+  seconds: number;
+  fps: number;
+  groupFrames: number;
+  totalGroups: number;
+}): string | null {
+  const { seconds, fps, groupFrames, totalGroups } = counts;
+  const groupsUp = Math.floor((seconds * fps) / groupFrames);
+  if (groupsUp + 1 >= totalGroups) return null;
+
+  const needed = Math.ceil((totalGroups * groupFrames) / fps);
+  return (
+    `incomplete upload: the video holds ${groupsUp} of the ${totalGroups} groups this file ` +
+    `needs (${seconds}s of video where it needs ${needed}s) - it has to be uploaded again`
+  );
+}
+
+/**
  * `count` group indices spread across `total`, first and last included.
  *
  * Exported for the test: the ends are where a truncated upload and a bad header
@@ -210,6 +242,14 @@ export class RestoreService {
     if (!fromYoutube && file.sourcePath && existsSync(file.sourcePath)) {
       return { path: file.sourcePath };
     }
+
+    // A file too long for one video is stored as parts, and a part is an
+    // ordinary file: restore each in turn and join them back. Joining rather
+    // than streaming through is deliberate — the caller serves byte ranges out
+    // of the result, and a range that lands across two parts has to be a seek
+    // in one file, not an accident of arithmetic across several.
+    const parts = await this.files.partsOf(file.id);
+    if (parts.length > 0) return this.join(file, parts, fromYoutube);
 
     if (!file.videoId || !file.ytAccountId) {
       throw new BadRequestException(`file is ${file.status}; nothing to download yet`);
@@ -404,6 +444,30 @@ export class RestoreService {
    * further down. Failing that too, the static order stands — the probe is an
    * optimisation and is never allowed to be the reason a restore refuses.
    */
+  /**
+   * Throws when YouTube is holding less video than the payload needs.
+   *
+   * Deliberately generous: the video is allowed to be *longer* — a rendition
+   * routinely comes back with a few frames of padding on the end, and one
+   * whole group of slack keeps rounding in the duration from ever failing a
+   * good file. What it refuses is a video that is short by more than that,
+   * which cannot be anything but groups that were never stored.
+   *
+   * A duration YouTube will not report is not evidence of anything, so it
+   * passes: this check exists to catch a specific, provable failure, never to
+   * become a new way for a healthy restore to refuse.
+   */
+  private async refuseIfShort(file: StoredFile, totalGroups: number): Promise<void> {
+    const seconds = await this.ytdlp
+      .duration(file.ytAccountId!, file.videoId!)
+      .catch(() => null);
+    if (seconds === null) return;
+
+    const { fps, groupFrames } = await this.codec.specs();
+    const complaint = shortUploadMessage({ seconds, fps, groupFrames, totalGroups });
+    if (complaint) throw new Error(complaint);
+  }
+
   private async heightOrder(file: StoredFile): Promise<(number | null)[]> {
     const known = heightFromRow(file.restoreHeight);
     if (known !== undefined) {
@@ -578,6 +642,93 @@ export class RestoreService {
     return undefined;
   }
 
+  /**
+   * Restores every part of a split file and writes them back into one.
+   *
+   * Sequential on purpose. Each part is a download of gigabytes and a decode
+   * that pins a core, so running them together would multiply the memory and
+   * invite the rate limiting that halves the download speed for everything
+   * after it — and the parts share one cookie jar, which is serialised anyway.
+   *
+   * The join is verified as a whole before it is handed over: a part can be
+   * individually perfect and still be the wrong part, so the parent's hash over
+   * the assembled bytes is the only thing that proves the file is the file.
+   * That result goes into the same cache a whole file uses, keyed by the
+   * parent's hash, so a second read costs a disk read like any other.
+   */
+  private async join(
+    parent: StoredFile,
+    parts: StoredFile[],
+    fromYoutube: boolean,
+  ): Promise<RestoredBytes> {
+    if (!fromYoutube) {
+      const cached = await this.cache.get(parent.sha256);
+      if (cached) return { path: cached };
+    }
+
+    const running = this.inFlight.get(parent.id);
+    if (running) return running;
+
+    const started = this.assemble(parent, parts, fromYoutube).finally(() =>
+      this.inFlight.delete(parent.id),
+    );
+    this.inFlight.set(parent.id, started);
+    return started;
+  }
+
+  private async assemble(
+    parent: StoredFile,
+    parts: StoredFile[],
+    fromYoutube: boolean,
+  ): Promise<RestoredBytes> {
+    const dir = await this.files.ensureDir('restore', parent.id);
+    const path = join(dir, 'joined');
+    await rm(path, { force: true });
+
+    this.log.log(`joining ${parts.length} parts of ${parent.name}`);
+    // The parent is the id the page is polling, so the bar has to be reported
+    // against it: each part's own restore reports under the part's id, which
+    // nothing is watching.
+    this.restoring.begin(parent.id);
+
+    const hash = createHash('sha256');
+    try {
+      for (const [index, part] of parts.entries()) {
+        const piece = await this.bytes(part, fromYoutube);
+        try {
+          await pipeline(
+            createReadStream(piece.path),
+            async function* (source) {
+              for await (const chunk of source) {
+                hash.update(chunk as Buffer);
+                yield chunk;
+              }
+            },
+            createWriteStream(path, { flags: 'a' }),
+          );
+        } finally {
+          piece.cleanup?.();
+        }
+        this.restoring.set(parent.id, 'decoding', ((index + 1) / parts.length) * 100);
+      }
+
+      const digest = hash.digest('hex');
+      if (digest !== parent.sha256) {
+        throw new Error(
+          `joined ${parts.length} parts of ${parent.name} and got ${digest}, not ${parent.sha256}`,
+        );
+      }
+    } catch (error) {
+      await rm(path, { force: true });
+      throw error;
+    } finally {
+      this.restoring.end(parent.id);
+    }
+
+    const cached = await this.cache.put(parent.sha256, path);
+    return cached ? { path: cached } : { path, cleanup: () => void rm(path, { force: true }) };
+  }
+
   /** The whole round trip: download, decode, verify, cache. */
   private async restore(file: StoredFile): Promise<RestoredBytes> {
     // A fresh directory every time. yt-dlp writes the video straight to this
@@ -669,6 +820,24 @@ export class RestoreService {
       1,
       Math.ceil((header.payloadOffset + header.payloadLength) / layout.groupBytes),
     );
+
+    // Is the whole file even up there? Sampling answers "do the groups decode",
+    // never "are they all present": every group it picks is inside whatever
+    // length the video happens to have, so an upload that stopped half way
+    // passes each sample and still cannot be restored.
+    //
+    // This is not hypothetical. `oJW7GciZsAQ` holds 607 of the 1242 groups its
+    // own header asks for — ten minutes of video where the payload needs
+    // twenty — and it sat in the list as `ready`, hash and all, because nothing
+    // had ever compared the two numbers. The parity is 6 frames in every 30
+    // within a group and there is no redundancy between groups, so the missing
+    // half is gone: this check cannot recover such a file, only refuse to
+    // promise one.
+    //
+    // One metadata call, no download, and it runs before the samples so a
+    // truncated upload fails in seconds rather than after eight fetches.
+    await this.refuseIfShort(file, totalGroups);
+
     const sampled = spreadGroups(totalGroups, SAMPLE_GROUPS);
 
     onPhase?.(1, sampled.length);

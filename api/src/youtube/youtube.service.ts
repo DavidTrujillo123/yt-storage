@@ -35,7 +35,7 @@ export class YoutubeService {
   async upload(
     account: YtAccount,
     videoPath: string,
-    meta: { fileId: string; name: string; sha256: string },
+    meta: { fileId: string; name: string; sha256: string; part?: PartOf },
     onProgress?: (percent: number) => void,
   ): Promise<string> {
     const youtube = this.client(account);
@@ -52,7 +52,7 @@ export class YoutubeService {
       {
         part: ['snippet', 'status'],
         requestBody: {
-          snippet: { title: containerTitle(meta.fileId), description: containerDescription(meta) },
+          snippet: { title: containerTitle(meta), description: containerDescription(meta) },
           status: { privacyStatus: 'private', selfDeclaredMadeForKids: false },
         },
         media: { body: createReadStream(videoPath) },
@@ -81,6 +81,44 @@ export class YoutubeService {
 
   async delete(account: YtAccount, videoId: string): Promise<void> {
     await this.client(account).videos.delete({ id: videoId });
+  }
+
+  /**
+   * Rewrites a stored video's title and description after a rename.
+   *
+   * Both, not just the title: the description is what a rebuild reads, so a
+   * rename that only touched the title would come back under the old name the
+   * first time the catalogue is rebuilt from the channel.
+   *
+   * `videos.update` needs a write scope that uploading does not, so an account
+   * connected before that scope existed will refuse this — which is a reason to
+   * tell the operator to reconnect, never a reason to fail the rename. The name
+   * that matters is the one in this database; the channel is a mirror of it.
+   */
+  async retitle(
+    account: YtAccount,
+    videoId: string,
+    meta: { fileId: string; name: string; sha256: string; part?: PartOf },
+  ): Promise<void> {
+    const youtube = this.client(account);
+
+    // The category has to be sent back or the update is rejected, and YouTube
+    // will not infer it: an update to `snippet` replaces the whole of it.
+    const { data } = await youtube.videos.list({ part: ['snippet'], id: [videoId] });
+    const categoryId = data.items?.[0]?.snippet?.categoryId ?? '22';
+
+    await youtube.videos.update({
+      part: ['snippet'],
+      requestBody: {
+        id: videoId,
+        snippet: {
+          title: containerTitle(meta),
+          description: containerDescription(meta),
+          categoryId,
+        },
+      },
+    });
+    this.log.log(`retitled ${videoId} to "${containerTitle(meta)}"`);
   }
 
   /**
@@ -168,19 +206,52 @@ export interface ChannelVideo {
   publishedAt: string | null;
 }
 
-export function containerTitle(fileId: string): string {
-  return `yt-storage ${fileId}`;
+/**
+ * The title a container video wears on the channel.
+ *
+ * The file's own name, because that is the only thing that makes a channel of
+ * these readable to the person who owns it — and, for a file split across
+ * videos, the part number, so the run reads `Cursos Virtuales p1`,
+ * `Cursos Virtuales p2` in the order it has to be joined.
+ *
+ * The title is decoration and nothing depends on it: identity lives in the
+ * description, where `parseContainerVideo` reads it. That split is what lets a
+ * file be renamed — the title follows the new name, and a rebuild still finds
+ * the same row. Videos uploaded before this change carry the id in the title
+ * instead, and the parser still accepts those.
+ */
+export function containerTitle(meta: { fileId: string; name?: string; part?: PartOf }): string {
+  if (!meta.name) return `yt-storage ${meta.fileId}`;
+  return meta.part ? `${meta.name} p${meta.part.index + 1}` : meta.name;
+}
+
+/** Which piece of a split file a video holds, 0-based. */
+export interface PartOf {
+  index: number;
+  count: number;
 }
 
 /**
  * What the catalogue is rebuilt from, so it is written in one place and read in
  * one place, both of them here.
  */
-export function containerDescription(meta: { name: string; sha256: string }): string {
+export function containerDescription(meta: {
+  fileId: string;
+  name: string;
+  sha256: string;
+  part?: PartOf;
+}): string {
   return [
     'yt-storage container. Not video content.',
+    // The id moved here from the title when titles became the file's name: a
+    // renamed file rewrites its titles, and identity cannot live in something
+    // that changes.
+    `id: ${meta.fileId}`,
     `file: ${meta.name}`,
     `sha256: ${meta.sha256}`,
+    // Only on a split file, and it says everything a rebuild needs to put the
+    // pieces back in order without a database.
+    ...(meta.part ? [`part: ${meta.part.index + 1} of ${meta.part.count}`] : []),
   ].join('\n');
 }
 
@@ -189,6 +260,8 @@ export interface ContainerVideo {
   fileId: string;
   name: string;
   sha256: string;
+  /** Present only when the video holds one piece of a split file. */
+  part?: PartOf;
 }
 
 /**
@@ -203,12 +276,25 @@ export interface ContainerVideo {
  * if it were right turns into a download that refuses its own bytes.
  */
 export function parseContainerVideo(video: ChannelVideo): ContainerVideo | null {
-  const title = video.title.match(/^yt-storage\s+([0-9a-f-]{36})$/i);
-  if (!title) return null;
+  // The id from the description first, and only then from the title. Both are
+  // written by this app: the description form is what a video carries now, the
+  // title form is what every video uploaded before titles became filenames
+  // carries, and dropping the second would orphan a whole channel of them.
+  const fromDescription = video.description.match(/^id:\s*([0-9a-f-]{36})\s*$/im);
+  const fromTitle = video.title.match(/^yt-storage\s+([0-9a-f-]{36})$/i);
+  const fileId = fromDescription?.[1] ?? fromTitle?.[1];
+  if (!fileId) return null;
 
   const name = video.description.match(/^file:\s*(.+)$/m);
   const sha256 = video.description.match(/^sha256:\s*([0-9a-f]{64})\s*$/im);
   if (!name || !sha256) return null;
 
-  return { fileId: title[1], name: name[1].trim(), sha256: sha256[1].toLowerCase() };
+  const part = video.description.match(/^part:\s*(\d+)\s+of\s+(\d+)\s*$/im);
+
+  return {
+    fileId,
+    name: name[1].trim(),
+    sha256: sha256[1].toLowerCase(),
+    ...(part ? { part: { index: Number(part[1]) - 1, count: Number(part[2]) } } : {}),
+  };
 }

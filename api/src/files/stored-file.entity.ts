@@ -81,6 +81,30 @@ export class StoredFile {
   @Column({ type: 'text', nullable: true })
   videoId!: string | null;
 
+  /**
+   * The file this row is a piece of, for a file too big to be one video.
+   *
+   * A video's length is set by the payload — one group is one second — and the
+   * channel caps how long a video may be, so past `MAX_VIDEO_SECONDS` worth of
+   * bytes a file cannot be one upload. Measured the hard way: a 2 GiB upload
+   * came to 23:10 against a 15:00 cap, `videos.insert` accepted it, YouTube
+   * abandoned the transcode and then deleted the video.
+   *
+   * So a large file becomes a parent row that owns no video of its own and a
+   * run of part rows that each do. Everything downstream — encode, upload,
+   * verify, retry, the restore cache — works on a part exactly as it always
+   * worked on a whole file; only the catalogue and the download know the
+   * difference. The parts are hidden from listings and their status is rolled
+   * up into the parent, which is the row the operator sees.
+   */
+  @Index()
+  @Column({ type: 'text', nullable: true })
+  parentId!: string | null;
+
+  /** Where this part sits in its parent, 0-based. Null on a whole file. */
+  @Column({ type: 'integer', nullable: true })
+  partIndex!: number | null;
+
   @Column({ type: 'integer', nullable: true })
   frames!: number | null;
 

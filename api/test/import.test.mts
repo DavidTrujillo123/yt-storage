@@ -19,8 +19,8 @@ const sha256 = 'a'.repeat(64);
 function video(over: Partial<ChannelVideo> = {}): ChannelVideo {
   return {
     videoId: 'dQw4w9WgXcQ',
-    title: containerTitle(fileId),
-    description: containerDescription({ name: 'holiday.tar', sha256 }),
+    title: containerTitle({ fileId }),
+    description: containerDescription({ fileId, name: 'holiday.tar', sha256 }),
     publishedAt: '2026-08-14T05:42:53Z',
     ...over,
   };
@@ -40,7 +40,7 @@ describe('parseContainerVideo', () => {
 
   it('keeps a filename containing spaces, colons and the word file', () => {
     const name = 'file: notes 2026: final.txt';
-    const parsed = parseContainerVideo(video({ description: containerDescription({ name, sha256 }) }));
+    const parsed = parseContainerVideo(video({ description: containerDescription({ fileId, name, sha256 }) }));
     assert.equal(parsed?.name, name);
   });
 
@@ -48,7 +48,12 @@ describe('parseContainerVideo', () => {
     // Everything here is left alone and reported: a row invented for someone's
     // holiday clip would store a hash the decoder later refuses, which reads as
     // a corrupted file rather than as a video that was never a container.
-    assert.equal(parseContainerVideo(video({ title: 'Cumpleaños de la abuela' })), null);
+    // Title *and* description, now that a stored file wears its own name: a
+    // title alone says nothing either way, since renaming a file rewrites it.
+    assert.equal(
+      parseContainerVideo(video({ title: 'Cumpleaños de la abuela', description: 'fotos de la fiesta' })),
+      null,
+    );
     assert.equal(parseContainerVideo(video({ title: 'yt-storage', description: '' })), null);
     assert.equal(parseContainerVideo(video({ description: 'yt-storage container.' })), null);
     assert.equal(
@@ -60,19 +65,19 @@ describe('parseContainerVideo', () => {
   it('refuses a truncated hash, which is the failure that would look fine', () => {
     // A short hash parses as a string and stores as a string; nothing notices
     // until a download compares it against 64 real characters.
-    const description = containerDescription({ name: 'x.bin', sha256: 'a'.repeat(63) });
+    const description = containerDescription({ fileId, name: 'x.bin', sha256: 'a'.repeat(63) });
     assert.equal(parseContainerVideo(video({ description })), null);
   });
 
   it('accepts an uppercase hash and stores it lowercase', () => {
     // yt-dlp and the codec both write lowercase; a description edited by hand
     // is the only source of the other case, and the catalogue compares strings.
-    const description = containerDescription({ name: 'x.bin', sha256: 'A'.repeat(64) });
+    const description = containerDescription({ fileId, name: 'x.bin', sha256: 'A'.repeat(64) });
     assert.equal(parseContainerVideo(video({ description }))?.sha256, 'a'.repeat(64));
   });
 
   it('tolerates the extra lines YouTube or a person may add below', () => {
-    const description = `${containerDescription({ name: 'x.bin', sha256 })}\n\nuploaded by yt-storage`;
+    const description = `${containerDescription({ fileId, name: 'x.bin', sha256 })}\n\nuploaded by yt-storage`;
     assert.equal(parseContainerVideo(video({ description }))?.name, 'x.bin');
   });
 });

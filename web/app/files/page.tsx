@@ -145,6 +145,28 @@ export default function FilesPage() {
     await refresh();
   }
 
+  async function rename(file: StoredFile) {
+    // A prompt rather than an inline editor: renaming is rare, the old name is
+    // the sensible starting point, and Escape has to leave the row untouched.
+    const asked = prompt(`Rename ${file.name} to:`, file.name);
+    if (asked === null || asked.trim() === file.name) return;
+
+    setError(null);
+    // The reply says how many videos kept the old title, which only happens on
+    // an account connected before this app asked for the write scope. It is
+    // worth surfacing: the file is renamed either way, the channel is not.
+    const result = await api<{ stale: number; message?: string }>(`/files/${file.id}/name`, {
+      method: 'POST',
+      body: JSON.stringify({ name: asked }),
+    }).catch((failure) => {
+      setError(failure.message);
+      return null;
+    });
+
+    if (result?.message) setError(result.message);
+    await refresh();
+  }
+
   async function remove(file: StoredFile) {
     if (!confirm(`Delete ${file.name}? The video stays on YouTube; this only forgets it.`)) return;
     await api(`/files/${file.id}`, { method: 'DELETE' }).catch((failure) => setError(failure.message));
@@ -295,6 +317,9 @@ export default function FilesPage() {
                           </a>
                         </>
                       )}
+                      <button className="quiet" onClick={() => rename(file)}>
+                        Rename
+                      </button>
                       <button className="danger quiet" onClick={() => remove(file)}>
                         Delete
                       </button>

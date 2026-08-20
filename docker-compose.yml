@@ -31,6 +31,13 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@yt-storage.com}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Abcd1234}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5368709120}
+      # The channel's own cap on how long one video may be, which is what
+      # decides whether a file is stored as one video or several: a group is a
+      # second, so this is a size limit in disguise. Fifteen minutes is what an
+      # unverified channel accepts — and past it `videos.insert` succeeds and
+      # YouTube abandons the transcode, so guessing high is expensive. A
+      # channel verified by phone accepts twelve hours: 43200.
+      YOUTUBE_MAX_VIDEO_SECONDS: ${YOUTUBE_MAX_VIDEO_SECONDS:-900}
       # A restore's wall clock is essentially all download — measured at 5.6
       # MB/s across 3.97 GB, with bursts to 13 and stalls near zero, which is
       # per-connection throttling rather than a full link. This is the ceiling
