@@ -1,7 +1,7 @@
 {
   "name": "yt-storage",
   "private": true,
-  "version": "0.1.12",
+  "version": "0.1.13",
   "scripts": {
     "setup": "pnpm install && pnpm rebuild -r && pnpm run build",
     "redis:up": "docker compose up -d redis",
