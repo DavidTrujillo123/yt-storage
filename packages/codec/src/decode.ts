@@ -332,9 +332,13 @@ export async function decodeVideo(
     stats = read.stats;
 
     if (read.groups.size === 0 && nextGroup === 0) throw new Error('no readable frames found');
-    // Whatever the last partial window left behind. `framesRead` is rounded up
-    // to a whole group so a final short one still counts as finished.
-    await flush(read.groups, stats, Math.ceil(stats.framesRead / GROUP_FRAMES) * GROUP_FRAMES);
+    // Whatever the last partial window left behind, counted from the furthest
+    // group the frames themselves carried rather than from `framesRead`. The
+    // two differ whenever the container holds frames past the payload — a
+    // YouTube rendition pads the tail of the video — and rounding the frame
+    // count up invented a group that was never encoded, which failed every
+    // restore with "missing entire groups: N" for the group after the last.
+    await flush(read.groups, stats, (stats.furthestGroup + 1) * GROUP_FRAMES);
   } catch (error) {
     await writer.abort();
     throw error;

@@ -365,6 +365,13 @@ export interface SimulateOptions {
   crf?: number;
   /** Serve the result at a lower resolution, as YouTube does on weak playback. */
   height?: number;
+  /**
+   * Extra frames cloned onto the end, which is what a real rendition does: the
+   * video that comes back is a little longer than the one that went up. They
+   * carry no shards, so a decoder that counts groups from the frame count
+   * rather than from the frames themselves invents one that was never encoded.
+   */
+  padFrames?: number;
 }
 
 /**
@@ -378,7 +385,7 @@ export interface SimulateOptions {
 export async function simulateYouTube(
   inPath: string,
   outPath: string,
-  { crf = 32, height }: SimulateOptions = {},
+  { crf = 32, height, padFrames = 0 }: SimulateOptions = {},
 ): Promise<void> {
   const args = [
     '-loglevel', 'error',
@@ -392,7 +399,11 @@ export async function simulateYouTube(
     '-cpu-used', '2',
     '-pix_fmt', 'yuv420p',
   ];
-  if (height) args.push('-vf', `scale=-2:${height}`);
+  const filters = [
+    ...(height ? [`scale=-2:${height}`] : []),
+    ...(padFrames ? [`tpad=stop_mode=clone:stop_duration=${padFrames / FPS}`] : []),
+  ];
+  if (filters.length) args.push('-vf', filters.join(','));
   args.push(outPath);
 
   const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'inherit'] });

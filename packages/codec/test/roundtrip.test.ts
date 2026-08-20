@@ -140,6 +140,28 @@ for (const { layout, crf, below, harsh } of cases) {
       );
 
       it(
+        'recovers the file when the rendition carries frames past the payload',
+        { timeout: FIVE_MINUTES },
+        async () => {
+          // What a real rendition does and the simulation did not: YouTube
+          // hands back a video a few frames longer than the one that went up.
+          // Those frames hold no shards, and a decoder that works out the last
+          // group from the frame count rather than from the frames themselves
+          // asks for a group that was never encoded — which failed every
+          // restore that had no local copy to answer from with "missing entire
+          // groups: <one past the last>".
+          const served = join(dir, 'served-padded.webm');
+          await simulateYouTube(master, served, { crf, height: layout.minHeight, padFrames: 4 });
+
+          const out = await mkdtemp(join(dir, 'out-padded-'));
+          const result = await decodeVideo(served, out);
+
+          assert.equal(result.sha256, sha256);
+          assert.ok(result.framesRead > 30, `read ${result.framesRead} frames, expected the pad`);
+        },
+      );
+
+      it(
         `fails below ${layout.minHeight}p instead of returning wrong bytes`,
         { timeout: FIVE_MINUTES },
         async () => {
