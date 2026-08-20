@@ -11,6 +11,11 @@ export const MIN_DECODABLE_HEIGHT = 1080;
 export const OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/youtube.upload',
   'https://www.googleapis.com/auth/youtube.readonly',
+  // Renaming a stored file rewrites the title and description of every video
+  // behind it, and `videos.update` is a write that uploading does not cover.
+  // An account connected before this scope was asked for keeps working for
+  // everything else; only the rename on YouTube's side refuses, and says so.
+  'https://www.googleapis.com/auth/youtube.force-ssl',
 ];
 
 export const REFRESH_TOKEN_KEY = 'youtube.refreshToken';
@@ -34,3 +39,26 @@ export const REFRESH_TOKEN_KEY = 'youtube.refreshToken';
  * feature ever runs in a loop, this is the comment that stops being true.
  */
 export const DAILY_UPLOAD_LIMIT = 100;
+
+/**
+ * The longest video the channel will accept, in seconds.
+ *
+ * A channel that has not verified a phone number is capped at fifteen minutes,
+ * and what happens past it is worth spelling out because it does not look like
+ * a refusal: `videos.insert` succeeds, the video appears, YouTube starts
+ * processing it and then stops with "Procesamiento interrumpido - el vídeo es
+ * demasiado largo". Measured on `71BoJ-0cBk0`, a 23:10 upload of 2 GiB: the
+ * insert returned an id, the app waited on a transcode that was never coming,
+ * and yt-dlp eventually answered "This video was removed because it was too
+ * long".
+ *
+ * That is almost certainly what happened to `oJW7GciZsAQ` too — 1242 groups is
+ * 20:42 of video, past the cap — and it is why that file sits in the list as
+ * `ready` with only the first ten minutes of itself on YouTube.
+ *
+ * Duration is set by the payload alone: a group is one second of video, so the
+ * cap is really a size limit of `groupBytes` per second. Verifying the channel
+ * raises it to twelve hours, which is why this is an env var and not a
+ * constant to live with.
+ */
+export const MAX_VIDEO_SECONDS = Number(process.env.YOUTUBE_MAX_VIDEO_SECONDS) || 15 * 60;

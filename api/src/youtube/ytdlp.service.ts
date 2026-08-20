@@ -159,6 +159,27 @@ export class YtdlpService {
   }
 
   /**
+   * The player clients yt-dlp asks, and the reason this app can read anything
+   * back at all.
+   *
+   * yt-dlp's own defaults answer these uploads with the HLS ladder and nothing
+   * else: one muxed rendition per rung, capped at 1080p. That ladder is a
+   * re-encode of a re-encode, and measured against a real file it is enough
+   * for `wide` — four pixels a block — and not enough for `dense`, whose two
+   * pixels come back smeared. Every `dense` upload was therefore unreadable:
+   * verification retried for a day and restores failed on the first group.
+   *
+   * `web_embedded` is the client that still answers with the adaptive DASH
+   * formats — 1080p, 1440p and 2160p as separate video-only streams, at four
+   * to eight times the ladder's bitrate. It is added rather than substituted:
+   * the defaults stay first, so nothing that works today changes, and the DASH
+   * rungs are merged in behind them for the format selector to find.
+   */
+  private get clientArgs(): string[] {
+    return ['--extractor-args', 'youtube:player_client=default,web_embedded'];
+  }
+
+  /**
    * How many DASH fragments yt-dlp fetches at once.
    *
    * YouTube serves these as fragments and yt-dlp takes them one at a time by
@@ -230,9 +251,32 @@ export class YtdlpService {
    * rung and the app's format selector takes the best, so reporting the worst
    * would describe a download nobody makes.
    */
+  /**
+   * How many seconds of video YouTube is holding, or null when it will not say.
+   *
+   * The cheapest question there is — metadata only, no formats fetched and no
+   * bytes downloaded — and the one that catches an upload that never finished.
+   * A video that is shorter than the container header says it should be is
+   * missing whole groups, and no amount of parity rebuilds a group that was
+   * never stored: the redundancy is 6 frames in every 30 *within* a group.
+   */
+  async duration(accountId: string, videoId: string): Promise<number | null> {
+    const { stdout } = await this.accounts.withCookies(accountId, (cookiePath) =>
+      this.run([
+        '--cookies', cookiePath,
+        ...this.clientArgs,
+        '--skip-download', '--no-warnings',
+        '--print', '%(duration)s',
+        this.url(videoId),
+      ]),
+    );
+    const seconds = Number(stdout.trim());
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+  }
+
   async renditions(accountId: string, videoId: string): Promise<Rendition[]> {
     const { stdout } = await this.accounts.withCookies(accountId, (cookiePath) =>
-      this.run(['--cookies', cookiePath, '-J', '-f', 'bestvideo*', this.url(videoId)]),
+      this.run(['--cookies', cookiePath, ...this.clientArgs, '-J', '-f', 'bestvideo*', this.url(videoId)]),
     );
     const info = JSON.parse(stdout) as { formats?: Format[] };
 
@@ -293,6 +337,7 @@ export class YtdlpService {
         await this.run(
           [
             '--cookies', cookiePath,
+            ...this.clientArgs,
             '-f', this.formatFor(height),
             // Only the seconds of video a caller asked for. yt-dlp keeps the
             // fragments that overlap the range and remuxes them, so the
@@ -381,7 +426,12 @@ export class YtdlpService {
   async checkAuth(accountId: string, videoId: string): Promise<boolean> {
     try {
       await this.accounts.withCookies(accountId, (cookiePath) =>
-        this.run(['--cookies', cookiePath, '--simulate', '--no-warnings', this.url(videoId)]),
+        this.run([
+          '--cookies', cookiePath,
+          ...this.clientArgs,
+          '--simulate', '--no-warnings',
+          this.url(videoId),
+        ]),
       );
       return true;
     } catch (error) {

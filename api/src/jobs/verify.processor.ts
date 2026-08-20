@@ -120,7 +120,21 @@ export class VerifyProcessor extends WorkerHost {
         });
       }
 
-      if (message.includes('hash mismatch') || this.isLastAttempt(job)) {
+      // An incomplete upload is as final as a hash mismatch: the groups are not
+      // on YouTube, so waiting a day for a transcode that has already finished
+      // only delays the news. The local copies are kept by `fail`, which is
+      // what makes the file recoverable by uploading it again.
+      //
+      // So is a video YouTube has taken down. Measured on `71BoJ-0cBk0`, which
+      // was over the channel's length cap: yt-dlp answers "Video unavailable.
+      // This video was removed because it was too long" on every attempt, and
+      // retrying that for a day is a day of asking a deleted video to appear.
+      if (
+        message.includes('hash mismatch') ||
+        message.includes('incomplete upload') ||
+        message.includes('Video unavailable') ||
+        this.isLastAttempt(job)
+      ) {
         await this.files.fail(
           file.id,
           stillTranscoding && this.isLastAttempt(job)
